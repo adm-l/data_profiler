@@ -83,13 +83,19 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 		return p, err
 	}
 	if total > 0 {
+		p.NullPercentage = float64(p.NullCount) * 100 / float64(total)
+		p.DistinctPercentage = float64(p.DistinctCount) * 100 / float64(total)
 	}
 	if isText(c.DataType) {
 		var min, max int64
-		q2 := "SELECT COALESCE(MIN(" + d.LengthExpr(qc) + "),0),COALESCE(MAX(" + d.LengthExpr(qc) + "),0),SUM(CASE WHEN " + qc + " IS NOT NULL AND " + qc + "='' THEN 1 ELSE 0 END) FROM " + qt
-		if err := db.QueryRowContext(ctx, q2).Scan(&min, &max, &p.EmptyCount); err == nil {
+		var avg sql.NullFloat64
+		q2 := "SELECT COALESCE(MIN(" + d.LengthExpr(qc) + "),0),COALESCE(MAX(" + d.LengthExpr(qc) + "),0),AVG(" + d.LengthExpr(qc) + "),SUM(CASE WHEN " + qc + " IS NOT NULL AND " + qc + "='' THEN 1 ELSE 0 END) FROM " + qt
+		if err := db.QueryRowContext(ctx, q2).Scan(&min, &max, &avg, &p.EmptyCount); err == nil {
 			p.MinLength = &min
 			p.MaxLength = &max
+			if avg.Valid && !math.IsNaN(avg.Float64) {
+				p.Avg = &avg.Float64
+			}
 		}
 	}
 	q3 := "SELECT " + text + ",COUNT(*) FROM " + qt + " WHERE " + qc + " IS NOT NULL GROUP BY " + text + " ORDER BY COUNT(*) DESC"
@@ -100,7 +106,11 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 			var v string
 			var n int64
 			if rows.Scan(&v, &n) == nil {
-				p.TopValues = append(p.TopValues, domain.ValueCount{Value: v, Count: n})
+				pct := 0.0
+				if total > 0 {
+					pct = float64(n) * 100 / float64(total)
+				}
+				p.TopValues = append(p.TopValues, domain.ValueCount{Value: v, Count: n, Percentage: pct})
 			}
 		}
 	}
