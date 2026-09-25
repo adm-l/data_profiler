@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"github.com/example/go-data-profiler/internal/domain"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
