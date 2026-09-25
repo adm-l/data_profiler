@@ -1,0 +1,109 @@
+package worker
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"go.uber.org/zap"
+
+	"github.com/example/go-data-profiler/internal/adapters"
+	"github.com/example/go-data-profiler/internal/domain"
+	"github.com/example/go-data-profiler/internal/pii"
+	"github.com/example/go-data-profiler/internal/quality"
+	"github.com/example/go-data-profiler/internal/store"
+)
+
+type Manager struct {
+	store   store.Store
+	jobs    chan string
+	workers int
+	logger  *zap.Logger
+	stop    context.CancelFunc
+	wg      sync.WaitGroup
+}
+
+func NewManager(s store.Store, n int, l *zap.Logger) *Manager {
+	if n < 1 {
+		n = 1
+	}
+	return &Manager{store: s, jobs: make(chan string, 1000), workers: n, logger: l}
+}
+
+func (m *Manager) Start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.stop = cancel
+	for i := 0; i < m.workers; i++ {
+		m.wg.Add(1)
+		go m.loop(ctx)
+	}
+}
+func (m *Manager) Stop() {
+	if m.stop != nil {
+		m.stop()
+	}
+	m.wg.Wait()
+}
+func (m *Manager) Enqueue(id string) {
+	select {
+	case m.jobs <- id:
+	default:
+		m.logger.Warn("job queue full", zap.String("job_id", id))
+	}
+}
+func (m *Manager) Create(req domain.ProfileRequest) (*domain.Job, error) {
+	j := &domain.Job{ID: uuid.NewString(), Status: "queued", Request: req, CreatedAt: time.Now().UTC()}
+	if err := m.store.CreateJob(context.Background(), j); err != nil {
+		return nil, err
+	}
+	m.Enqueue(j.ID)
+	return j, nil
+}
+func (m *Manager) loop(ctx context.Context) {
+	defer m.wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case id := <-m.jobs:
+			m.run(ctx, id)
+		}
+	}
+}
+func (m *Manager) run(parent context.Context, id string) {
+	j, err := m.store.GetJob(parent, id)
+	if err != nil {
+		return
+	}
+	now := time.Now().UTC()
+	j.Status = "running"
+	j.StartedAt = &now
+	_ = m.store.UpdateJob(parent, j)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
+	defer cancel()
+	a, err := adapters.Open(ctx, j.Request.Source.Type, j.Request.Source.DSN)
+	if err == nil {
+		defer a.Close()
+		var p *domain.TableProfile
+		p, err = a.ProfileTable(ctx, j.Request.Schema, j.Request.Table, j.Request.SampleSize)
+		if err == nil {
+			for i := range p.Columns {
+				p.Columns[i].PII = pii.Detect(p.Columns[i].Name, p.Columns[i].DataType)
+			}
+			p.Quality = quality.Evaluate(p)
+			p.CreatedAt = time.Now().UTC()
+			err = m.store.SaveProfile(ctx, j.ID, p)
+		}
+	}
+	if err != nil {
+		j.Status = "failed"
+		j.Error = fmt.Sprintf("%v", err)
+	} else {
+		j.Status = "completed"
+	}
+	end := time.Now().UTC()
+	j.FinishedAt = &end
+	_ = m.store.UpdateJob(context.Background(), j)
+}

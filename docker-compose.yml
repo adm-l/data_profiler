@@ -1,0 +1,38 @@
+services:
+
+  profiler-db:
+    image: postgres:16
+    container_name: go-profiler-db
+    environment:
+      POSTGRES_USER: profiler
+      POSTGRES_PASSWORD: profiler
+      POSTGRES_DB: profiler_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - profiler_db_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U profiler -d profiler_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  profiler-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: go-data-profiler
+    ports:
+      - "8080:8080"
+    environment:
+      HTTP_ADDR: ":8080"
+      PROFILER_DATABASE_URL: "postgres://profiler:profiler@profiler-db:5432/profiler_db?sslmode=disable"
+      JOB_WORKERS: "4"
+      LOG_LEVEL: "info"
+    depends_on:
+      profiler-db:
+        condition: service_healthy
+
+volumes:
+  profiler_db_data:

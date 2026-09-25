@@ -1,0 +1,55 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"github.com/example/go-data-profiler/internal/domain"
+)
+
+type Store interface {
+	CreateJob(context.Context, *domain.Job) error
+	UpdateJob(context.Context, *domain.Job) error
+	GetJob(context.Context, string) (*domain.Job, error)
+	SaveProfile(context.Context, string, *domain.TableProfile) error
+	GetLatestProfile(context.Context, string) (*domain.TableProfile, error)
+}
+type PostgresStore struct{ db *sql.DB }
+
+func NewPostgresStore(db *sql.DB) *PostgresStore { return &PostgresStore{db: db} }
+func (s *PostgresStore) CreateJob(ctx context.Context, j *domain.Job) error {
+	b, _ := json.Marshal(j.Request)
+	_, e := s.db.ExecContext(ctx, `INSERT INTO jobs(id,status,request,created_at) VALUES($1,$2,$3,$4)`, j.ID, j.Status, b, j.CreatedAt)
+	return e
+}
+func (s *PostgresStore) UpdateJob(ctx context.Context, j *domain.Job) error {
+	_, e := s.db.ExecContext(ctx, `UPDATE jobs SET status=$2,error=$3,started_at=$4,finished_at=$5 WHERE id=$1`, j.ID, j.Status, j.Error, j.StartedAt, j.FinishedAt)
+	return e
+}
+func (s *PostgresStore) GetJob(ctx context.Context, id string) (*domain.Job, error) {
+	var j domain.Job
+	var b []byte
+	err := s.db.QueryRowContext(ctx, `SELECT id,status,COALESCE(error,''),request,created_at,started_at,finished_at FROM jobs WHERE id=$1`, id).Scan(&j.ID, &j.Status, &j.Error, &b, &j.CreatedAt, &j.StartedAt, &j.FinishedAt)
+	if err != nil {
+		return nil, err
+	}
+	if err = json.Unmarshal(b, &j.Request); err != nil {
+		return nil, err
+	}
+	return &j, nil
+}
+func (s *PostgresStore) SaveProfile(ctx context.Context, id string, p *domain.TableProfile) error {
+	b, _ := json.Marshal(p)
+	_, e := s.db.ExecContext(ctx, `INSERT INTO profiles(job_id,schema_name,table_name,payload,created_at) VALUES($1,$2,$3,$4,$5)`, id, p.Schema, p.Table, b, p.CreatedAt)
+	return e
+}
+func (s *PostgresStore) GetLatestProfile(ctx context.Context, id string) (*domain.TableProfile, error) {
+	var b []byte
+	err := s.db.QueryRowContext(ctx, `SELECT payload FROM profiles WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1`, id).Scan(&b)
+	if err != nil {
+		return nil, err
+	}
+	var p domain.TableProfile
+	err = json.Unmarshal(b, &p)
+	return &p, err
+}
