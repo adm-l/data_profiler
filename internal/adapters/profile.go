@@ -180,6 +180,10 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 		}
 	}
 
+	if isText(c.DataType) {
+		addStringPatterns(&p)
+	}
+
 	if isText(c.DataType) && p.DistinctCount > 1 && p.DistinctCount <= 10000 {
 		addTextEntropy(ctx, db, qt, qc, total, p.DistinctCount, &p)
 	}
@@ -309,4 +313,60 @@ func addDateDistribution(ctx context.Context, db *sql.DB, d Dialect, table, colu
 		if total > 0 { pct = float64(count) * 100 / float64(total) }
 		p.DateDistribution = append(p.DateDistribution, domain.DateDistribution{Period: period, Count: count, Percentage: pct})
 	}
+}
+
+
+var (
+ patternEmailRE = regexp.MustCompile(`(?i)^[^@\\s]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$`)
+ patternUUIDRE = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+ patternURLRE = regexp.MustCompile(`(?i)^https?://[^\\s]+$`)
+ patternDateRE = regexp.MustCompile(`^\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}$`)
+ patternNumericRE = regexp.MustCompile(`^[+-]?\\d+(?:[.,]\\d+)?$`)
+)
+
+func addStringPatterns(p *domain.ColumnProfile) {
+ if len(p.TopValues) == 0 || p.TotalRows <= 0 { return }
+ counts := map[string]int64{}
+ for _, v := range p.TopValues {
+  label := classifyStringPattern(v.Value)
+  if label != "" { counts[label] += v.Count }
+ }
+ var patterns []domain.PatternCount
+ for label, count := range counts {
+  patterns = append(patterns, domain.PatternCount{Pattern: label, Count: count, Percentage: float64(count)*100/float64(p.TotalRows)})
+ }
+ // Stable order makes API output deterministic.
+ for i := 0; i < len(patterns); i++ {
+  for j := i+1; j < len(patterns); j++ {
+   if patterns[j].Count > patterns[i].Count { patterns[i], patterns[j] = patterns[j], patterns[i] }
+  }
+ }
+ p.Patterns = patterns
+}
+
+func classifyStringPattern(s string) string {
+ s = strings.TrimSpace(s)
+ switch {
+ case s == "": return "empty"
+ case patternEmailRE.MatchString(s): return "email"
+ case patternUUIDRE.MatchString(s): return "uuid"
+ case patternURLRE.MatchString(s): return "url"
+ case patternDateRE.MatchString(s): return "date"
+ case patternNumericRE.MatchString(s): return "numeric_string"
+ }
+ hasLetter, hasDigit, hasOther := false, false, false
+ for _, r := range s {
+  switch {
+  case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z': hasLetter = true
+  case r >= '0' && r <= '9': hasDigit = true
+  default: hasOther = true
+  }
+ }
+ switch {
+ case hasLetter && hasDigit && !hasOther: return "alphanumeric"
+ case hasLetter && !hasDigit && !hasOther: return "alphabetic"
+ case hasDigit && !hasLetter && !hasOther: return "integer_string"
+ case hasOther && !hasLetter && !hasDigit: return "symbolic"
+ default: return "mixed"
+ }
 }
