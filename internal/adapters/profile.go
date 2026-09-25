@@ -83,6 +83,7 @@ func ProfileTable(ctx context.Context, db *sql.DB, d Dialect, schema, table stri
 		return nil, first
 	}
 	result := &domain.TableProfile{Schema: schema, Table: table, TotalRows: total, Sampled: sampled, SampleSize: sample, Columns: out}
+	addNumericCorrelations(ctx, db, d, sampledFrom, cols, &result.Correlations)
 	if len(cols) > 0 {
 		groupCols := make([]string, len(cols))
 		for i, col := range cols { groupCols[i] = d.Quote(col.Name) }
@@ -370,4 +371,37 @@ func classifyStringPattern(s string) string {
  case hasOther && !hasLetter && !hasDigit: return "symbolic"
  default: return "mixed"
  }
+}
+
+
+func addNumericCorrelations(ctx context.Context, db *sql.DB, d Dialect, table string, cols []ColumnMeta, out *[]domain.Correlation) {
+	var numeric []ColumnMeta
+	for _, c := range cols {
+		if isNumeric(c.DataType) {
+			numeric = append(numeric, c)
+		}
+	}
+	// Pairwise correlation grows quadratically. Keep it bounded for wide tables.
+	if len(numeric) < 2 || len(numeric) > 12 {
+		return
+	}
+	for i := 0; i < len(numeric); i++ {
+		for j := i + 1; j < len(numeric); j++ {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			var coefficient sql.NullFloat64
+			q := d.NumericCorrelationQuery(d.Quote(numeric[i].Name), d.Quote(numeric[j].Name), table)
+			if err := db.QueryRowContext(ctx, q).Scan(&coefficient); err != nil || !coefficient.Valid || math.IsNaN(coefficient.Float64) {
+				continue
+			}
+			*out = append(*out, domain.Correlation{
+				ColumnA: numeric[i].Name,
+				ColumnB: numeric[j].Name,
+				Coefficient: coefficient.Float64,
+			})
+		}
+	}
 }
