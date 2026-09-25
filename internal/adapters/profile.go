@@ -167,6 +167,10 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 		}
 	}
 
+	if isText(c.DataType) && p.DistinctCount > 1 && p.DistinctCount <= 10000 {
+		addTextEntropy(ctx, db, qt, qc, total, p.DistinctCount, &p)
+	}
+
 	if isNumeric(c.DataType) {
 		var stddev, median, p75, p90, p95, p99 sql.NullFloat64
 		q5 := "SELECT " + d.NumericStatsExpr(qc) + " FROM " + qt
@@ -245,5 +249,37 @@ func addNumericHistogram(ctx context.Context, db *sql.DB, d Dialect, table, colu
 		upper := min+float64(i+1)*width
 		if i == 9 { upper=max }
 		p.Histogram=append(p.Histogram, domain.HistogramBin{Lower:lower,Upper:upper,Count:count,Percentage:float64(count)*100/float64(nonNull)})
+	}
+}
+
+
+func addTextEntropy(ctx context.Context, db *sql.DB, table, column string, total, distinct int64, p *domain.ColumnProfile) {
+	if total-p.NullCount <= 0 || distinct <= 1 {
+		return
+	}
+	rows, err := db.QueryContext(ctx, "SELECT COUNT(*) FROM "+table+" WHERE "+column+" IS NOT NULL GROUP BY "+column)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	nonNull := total - p.NullCount
+	var entropy float64
+	for rows.Next() {
+		var count int64
+		if err := rows.Scan(&count); err != nil || count <= 0 {
+			continue
+		}
+		prob := float64(count) / float64(nonNull)
+		entropy -= prob * math.Log2(prob)
+	}
+	if err := rows.Err(); err != nil {
+		return
+	}
+	p.Entropy = &entropy
+	maxEntropy := math.Log2(float64(distinct))
+	if maxEntropy > 0 {
+		normalized := entropy / maxEntropy
+		p.NormalizedEntropy = &normalized
 	}
 }
