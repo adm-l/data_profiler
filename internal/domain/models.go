@@ -67,6 +67,7 @@ type TableProfile struct {
 	DuplicateRowCount       int64   `json:"duplicate_row_count,omitempty"`
 	DuplicateRowPercentage  float64 `json:"duplicate_row_percentage,omitempty"`
 	Quality    QualityReport   `json:"quality"`
+	Drift      *DriftReport    `json:"drift,omitempty"`
 	CreatedAt  time.Time       `json:"created_at"`
 }
 type QualityReport struct {
