@@ -57,6 +57,7 @@ type ColumnProfile struct {
 	FutureDateCount    int64          `json:"future_date_count,omitempty"`
 	FutureDatePercentage float64      `json:"future_date_percentage,omitempty"`
 	DateRangeDays      *float64       `json:"date_range_days,omitempty"`
+	DateDistribution   []DateDistribution `json:"date_distribution,omitempty"`
 	TopValues          []ValueCount   `json:"top_values,omitempty"`
 	PII                string         `json:"pii,omitempty"`
 	PIIConfidence      float64        `json:"pii_confidence,omitempty"`
@@ -65,6 +66,11 @@ type ColumnProfile struct {
 	Histogram          []HistogramBin `json:"histogram,omitempty"`
 	Entropy            *float64       `json:"entropy,omitempty"`
 	NormalizedEntropy  *float64       `json:"normalized_entropy,omitempty"`
+}
+type DateDistribution struct {
+	Period     string  `json:"period"`
+	Count      int64   `json:"count"`
+	Percentage float64 `json:"percentage"`
 }
 type HistogramBin struct {
 	Lower      float64 `json:"lower"`
