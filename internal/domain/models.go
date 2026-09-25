@@ -6,11 +6,19 @@ type SourceConfig struct {
 	Type string `json:"type"`
 	DSN  string `json:"dsn"`
 }
+type QualityRules struct {
+	NullPercentageThreshold      *float64 `json:"null_percentage_threshold,omitempty"`
+	DominantValuePercentage      *float64 `json:"dominant_value_percentage,omitempty"`
+	HighCardinalityPercentage    *float64 `json:"high_cardinality_percentage,omitempty"`
+	AllowEmpty                   *bool    `json:"allow_empty,omitempty"`
+	AllowWhitespace              *bool    `json:"allow_whitespace,omitempty"`
+}
 type ProfileRequest struct {
 	Source     SourceConfig `json:"source"`
 	Schema     string       `json:"schema"`
 	Table      string       `json:"table"`
-	SampleSize int          `json:"sample_size,omitempty"`
+	SampleSize   int          `json:"sample_size,omitempty"`
+	QualityRules *QualityRules `json:"quality_rules,omitempty"`
 }
 type Job struct {
 	ID         string         `json:"id"`
