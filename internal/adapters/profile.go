@@ -94,7 +94,7 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 			p.MinLength = &min
 			p.MaxLength = &max
 			if avg.Valid && !math.IsNaN(avg.Float64) {
-				p.Avg = &avg.Float64
+				p.AvgLength = &avg.Float64
 			}
 		}
 	}
