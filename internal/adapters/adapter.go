@@ -84,6 +84,7 @@ type Dialect interface {
 	LengthExpr(string) string
 	CastText(string) string
 	NumericStatsExpr(string) string
+	NumericHistogramQuery(string, string) string
 	SampleTableExpr(string, int, int64) (string, bool, error)
 }
 type PostgresDialect struct{}
@@ -100,6 +101,10 @@ func (PostgresDialect) LengthExpr(c string) string { return `LENGTH(` + c + `)` 
 func (PostgresDialect) CastText(c string) string { return `CAST(` + c + ` AS TEXT)` }
 func (PostgresDialect) NumericStatsExpr(c string) string {
 	return "STDDEV_POP(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ")"
+}
+func (PostgresDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + ")),0) * 10)::int) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
 }
 func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
@@ -124,6 +129,10 @@ func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)`
 func (MySQLDialect) NumericStatsExpr(c string) string {
 	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
 }
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
 func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
 		return table, false, nil
@@ -145,6 +154,10 @@ func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
 func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
 func (SQLServerDialect) NumericStatsExpr(c string) string {
 	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
 }
 func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
