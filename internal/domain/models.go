@@ -48,6 +48,9 @@ type ColumnProfile struct {
 	AvgLength          *float64     `json:"avg_length,omitempty"`
 	TopValues          []ValueCount `json:"top_values,omitempty"`
 	PII                string       `json:"pii,omitempty"`
+	PIIConfidence      float64      `json:"pii_confidence,omitempty"`
+	OutlierCount       int64        `json:"outlier_count,omitempty"`
+	OutlierPercentage  float64      `json:"outlier_percentage,omitempty"`
 }
 type ValueCount struct {
 	Value      string  `json:"value"`
@@ -61,6 +64,8 @@ type TableProfile struct {
 	Sampled    bool            `json:"sampled"`
 	SampleSize int             `json:"sample_size,omitempty"`
 	Columns    []ColumnProfile `json:"columns"`
+	DuplicateRowCount       int64   `json:"duplicate_row_count,omitempty"`
+	DuplicateRowPercentage  float64 `json:"duplicate_row_percentage,omitempty"`
 	Quality    QualityReport   `json:"quality"`
 	CreatedAt  time.Time       `json:"created_at"`
 }
