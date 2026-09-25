@@ -87,6 +87,7 @@ type Dialect interface {
 	NumericHistogramQuery(string, string) string
 	FutureDateCountExpr(string) string
 	DateRangeDaysExpr(string) string
+	DateDistributionQuery(string, string) string
 	SampleTableExpr(string, int, int64) (string, bool, error)
 }
 type PostgresDialect struct{}
@@ -110,6 +111,7 @@ func (PostgresDialect) NumericHistogramQuery(c, table string) string {
 }
 func (PostgresDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
 func (PostgresDialect) DateRangeDaysExpr(c string) string { return "EXTRACT(EPOCH FROM (MAX(" + c + ") - MIN(" + c + ")))/86400.0" }
+func (PostgresDialect) DateDistributionQuery(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
 func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
 		return table, false, nil
@@ -139,6 +141,7 @@ func (MySQLDialect) NumericHistogramQuery(c, table string) string {
 }
 func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
 func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
 func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
 		return table, false, nil
@@ -167,6 +170,7 @@ func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
 }
 func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
 func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
 func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
 		return table, false, nil
