@@ -113,7 +113,10 @@ func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
 func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
 func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
 func (MySQLDialect) NumericStatsExpr(c string) string {
-	return "STDDEV_POP(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ")"
+	// MySQL does not provide PostgreSQL/SQL Server-style PERCENTILE_CONT.
+	// Keep this query portable and expose stddev; percentile support can be
+	// added later with an explicit ordered-sample strategy.
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
 }
 
 type SQLServerDialect struct{}
