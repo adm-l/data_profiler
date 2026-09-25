@@ -22,10 +22,10 @@ type Job struct {
 	FinishedAt *time.Time     `json:"finished_at,omitempty"`
 }
 type ColumnProfile struct {
-	Name          string       `json:"name"`
-	DataType      string       `json:"data_type"`
-	Nullable      bool         `json:"nullable"`
-	TotalRows     int64        `json:"total_rows"`
+	Name               string       `json:"name"`
+	DataType           string       `json:"data_type"`
+	Nullable           bool         `json:"nullable"`
+	TotalRows          int64        `json:"total_rows"`
 	NullCount          int64        `json:"null_count"`
 	NullPercentage     float64      `json:"null_percentage"`
 	DistinctCount      int64        `json:"distinct_count"`
@@ -33,21 +33,21 @@ type ColumnProfile struct {
 	EmptyCount         int64        `json:"empty_count"`
 	WhitespaceCount    int64        `json:"whitespace_count"`
 	ZeroCount          int64        `json:"zero_count,omitempty"`
-	Min           *string      `json:"min,omitempty"`
-	Max           *string      `json:"max,omitempty"`
-	Avg           *float64     `json:"avg,omitempty"`
-	StdDev        *float64     `json:"stddev,omitempty"`
-	Median        *float64     `json:"median,omitempty"`
-	P50           *float64     `json:"p50,omitempty"`
-	P75           *float64     `json:"p75,omitempty"`
-	P90           *float64     `json:"p90,omitempty"`
-	P95           *float64     `json:"p95,omitempty"`
-	P99           *float64     `json:"p99,omitempty"`
-	MinLength     *int64       `json:"min_length,omitempty"`
-	MaxLength     *int64       `json:"max_length,omitempty"`
-	AvgLength     *float64     `json:"avg_length,omitempty"`
-	TopValues     []ValueCount `json:"top_values,omitempty"`
-	PII           string       `json:"pii,omitempty"`
+	Min                *string      `json:"min,omitempty"`
+	Max                *string      `json:"max,omitempty"`
+	Avg                *float64     `json:"avg,omitempty"`
+	StdDev             *float64     `json:"stddev,omitempty"`
+	Median             *float64     `json:"median,omitempty"`
+	P50                *float64     `json:"p50,omitempty"`
+	P75                *float64     `json:"p75,omitempty"`
+	P90                *float64     `json:"p90,omitempty"`
+	P95                *float64     `json:"p95,omitempty"`
+	P99                *float64     `json:"p99,omitempty"`
+	MinLength          *int64       `json:"min_length,omitempty"`
+	MaxLength          *int64       `json:"max_length,omitempty"`
+	AvgLength          *float64     `json:"avg_length,omitempty"`
+	TopValues          []ValueCount `json:"top_values,omitempty"`
+	PII                string       `json:"pii,omitempty"`
 }
 type ValueCount struct {
 	Value      string  `json:"value"`
@@ -69,9 +69,13 @@ type QualityReport struct {
 	Checks []QualityCheck `json:"checks"`
 }
 type QualityCheck struct {
-	Name    string `json:"name"`
-	Passed  bool   `json:"passed"`
-	Details string `json:"details"`
+	Name      string  `json:"name"`
+	Passed    bool    `json:"passed"`
+	Severity  string  `json:"severity"`
+	Metric    string  `json:"metric"`
+	Threshold float64 `json:"threshold"`
+	Actual    float64 `json:"actual"`
+	Details   string  `json:"details"`
 }
 type DriftReport struct {
 	Changed       bool     `json:"changed"`
