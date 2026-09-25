@@ -90,7 +90,9 @@ func (m *Manager) run(parent context.Context, id string) {
 		p, err = a.ProfileTable(ctx, j.Request.Schema, j.Request.Table, j.Request.SampleSize)
 		if err == nil {
 			for i := range p.Columns {
-				p.Columns[i].PII = pii.Detect(p.Columns[i].Name, p.Columns[i].DataType)
+				detection := pii.DetectProfile(p.Columns[i].Name, p.Columns[i].DataType, p.Columns[i].TopValues)
+				p.Columns[i].PII = detection.Label
+				p.Columns[i].PIIConfidence = detection.Confidence
 			}
 			p.Quality = quality.Evaluate(p)
 			p.CreatedAt = time.Now().UTC()
