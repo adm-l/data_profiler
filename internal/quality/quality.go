@@ -102,6 +102,14 @@ func Evaluate(p *domain.TableProfile) domain.QualityReport {
 			}
 		}
 
+		if isNumericColumn(c.DataType) && c.OutlierCount > 0 {
+			checks = append(checks, domain.QualityCheck{
+				Name: "outliers:" + c.Name, Passed: true, Severity: "warn",
+				Metric: "outlier_percentage", Threshold: 0, Actual: c.OutlierPercentage,
+				Details: fmt.Sprintf("3-sigma screening found %d outlier value(s) (%.2f%% of non-null values)", c.OutlierCount, c.OutlierPercentage),
+			})
+		}
+
 		if isNumericColumn(c.DataType) && c.ZeroCount > 0 {
 			zeroPct := percentage(c.ZeroCount, c.TotalRows-c.NullCount)
 			checks = append(checks, domain.QualityCheck{
@@ -114,6 +122,11 @@ func Evaluate(p *domain.TableProfile) domain.QualityReport {
 				Details:   fmt.Sprintf("zero values %d (%.2f%% of non-null values)", c.ZeroCount, zeroPct),
 			})
 		}
+	}
+
+	if p.DuplicateRowCount > 0 {
+		checks = append(checks, domain.QualityCheck{Name: "duplicate_rows", Passed: false, Severity: "warn", Metric: "duplicate_row_percentage", Threshold: 0, Actual: p.DuplicateRowPercentage, Details: fmt.Sprintf("%d duplicate row(s) (%.2f%%)", p.DuplicateRowCount, p.DuplicateRowPercentage)})
+		score -= 5
 	}
 
 	if score < 0 {
