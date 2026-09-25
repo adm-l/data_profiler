@@ -11,6 +11,7 @@ import (
 
 	"github.com/example/go-data-profiler/internal/adapters"
 	"github.com/example/go-data-profiler/internal/domain"
+	"github.com/example/go-data-profiler/internal/drift"
 	"github.com/example/go-data-profiler/internal/pii"
 	"github.com/example/go-data-profiler/internal/quality"
 	"github.com/example/go-data-profiler/internal/store"
@@ -96,6 +97,14 @@ func (m *Manager) run(parent context.Context, id string) {
 			}
 			p.Quality = quality.Evaluate(p)
 			p.CreatedAt = time.Now().UTC()
+
+			// Compare this snapshot with the most recent completed profile
+			// for the same schema/table before persisting the new snapshot.
+			if previous, previousErr := m.store.GetPreviousProfile(ctx, p.Schema, p.Table); previousErr == nil {
+				report := drift.Compare(*previous, *p)
+				p.Drift = &report
+			}
+
 			err = m.store.SaveProfile(ctx, j.ID, p)
 		}
 	}
