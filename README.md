@@ -51,6 +51,8 @@ curl http://localhost:8080/api/v1/profile-jobs/{job-id}
 A PostgreSQL fixture is included at `examples/dirty_profile_test.sql`. It intentionally contains NULLs, empty strings, whitespace-only strings, duplicates, zero/negative values, decimals, and timestamps.
 
 ```bash
+# The Docker Compose PostgreSQL database creates this fixture automatically.
+# For a standalone PostgreSQL database, the same fixture can be loaded manually:
 psql "$DATABASE_URL" -f examples/dirty_profile_test.sql
 ```
 
