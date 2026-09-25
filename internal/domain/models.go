@@ -36,6 +36,7 @@ type ColumnProfile struct {
 	Avg           *float64     `json:"avg,omitempty"`
 	MinLength     *int64       `json:"min_length,omitempty"`
 	MaxLength     *int64       `json:"max_length,omitempty"`
+	AvgLength     *float64     `json:"avg_length,omitempty"`
 	TopValues     []ValueCount `json:"top_values,omitempty"`
 	PII           string       `json:"pii,omitempty"`
 }
