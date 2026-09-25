@@ -31,6 +31,8 @@ type ColumnProfile struct {
 	DistinctCount      int64        `json:"distinct_count"`
 	DistinctPercentage float64      `json:"distinct_percentage"`
 	EmptyCount         int64        `json:"empty_count"`
+	WhitespaceCount    int64        `json:"whitespace_count"`
+	ZeroCount          int64        `json:"zero_count,omitempty"`
 	Min           *string      `json:"min,omitempty"`
 	Max           *string      `json:"max,omitempty"`
 	Avg           *float64     `json:"avg,omitempty"`

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/example/go-data-profiler/internal/domain"
 	"math"
-	"strconv"
 	"strings"
 	"sync"
 )
@@ -89,31 +88,34 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 	text := d.CastText(qc)
 	p := domain.ColumnProfile{Name: c.Name, DataType: c.DataType, Nullable: c.Nullable, TotalRows: total}
 
-	// Combine the common aggregates into one table scan per column.
-	// Top-values and percentiles intentionally remain separate because they
-	// require different execution plans.
-	q := "SELECT COUNT(*)-COUNT(" + qc + "),COUNT(DISTINCT " + text + ")"
+	// Combine common aggregates into one scan per column. Nullable SQL aggregates
+	// are scanned through sql.Null* so empty/all-NULL columns do not fail profiling.
+	q := "SELECT COUNT(*)-COUNT(" + qc + "),COUNT(DISTINCT " + qc + ")"
 	if isText(c.DataType) {
-		q += ",COALESCE(MIN(" + d.LengthExpr(qc) + "),0),COALESCE(MAX(" + d.LengthExpr(qc) + "),0),AVG(" + d.LengthExpr(qc) + "),COALESCE(SUM(CASE WHEN " + qc + " IS NOT NULL AND " + qc + "='' THEN 1 ELSE 0 END),0)"
+		q += ",COALESCE(MIN(" + d.LengthExpr(qc) + "),0),COALESCE(MAX(" + d.LengthExpr(qc) + "),0),AVG(" + d.LengthExpr(qc) + "),COALESCE(SUM(CASE WHEN " + qc + " IS NOT NULL AND " + qc + "='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN " + qc + " IS NOT NULL AND " + qc + "<>'' AND TRIM(" + qc + ")='' THEN 1 ELSE 0 END),0),NULL"
 	} else {
-		q += ",0,0,0,0"
+		q += ",0,0,0,0,0"
 	}
 	if isNumeric(c.DataType) {
-		q += ",MIN(" + qc + "),MAX(" + qc + "),AVG(" + qc + ")"
+		q += "," + d.CastText("MIN("+qc+")") + "," + d.CastText("MAX("+qc+")") + ",AVG(" + qc + "),COALESCE(SUM(CASE WHEN " + qc + "=0 THEN 1 ELSE 0 END),0)"
+	} else if isDateTime(c.DataType) {
+		q += "," + d.CastText("MIN("+qc+")") + "," + d.CastText("MAX("+qc+")") + ",NULL,0"
 	} else {
-		q += ",NULL,NULL,NULL"
+		q += ",NULL,NULL,NULL,0"
 	}
 
 	var minLen, maxLen sql.NullInt64
 	var avgLen sql.NullFloat64
-	var minNum, maxNum, avgNum sql.NullFloat64
+	var minValue, maxValue sql.NullString
+	var avgNum sql.NullFloat64
 	if err := db.QueryRowContext(ctx, q+" FROM "+qt).Scan(
 		&p.NullCount, &p.DistinctCount,
-		&minLen, &maxLen, &avgLen, &p.EmptyCount,
-		&minNum, &maxNum, &avgNum,
+		&minLen, &maxLen, &avgLen, &p.EmptyCount, &p.WhitespaceCount,
+		&minValue, &maxValue, &avgNum, &p.ZeroCount,
 	); err != nil {
 		return p, err
 	}
+
 	if total > 0 {
 		p.NullPercentage = float64(p.NullCount) * 100 / float64(total)
 		p.DistinctPercentage = float64(p.DistinctCount) * 100 / float64(total)
@@ -127,13 +129,11 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 	if avgLen.Valid && !math.IsNaN(avgLen.Float64) {
 		p.AvgLength = &avgLen.Float64
 	}
-	if minNum.Valid {
-		s := strconv.FormatFloat(minNum.Float64, 'f', -1, 64)
-		p.Min = &s
+	if minValue.Valid {
+		p.Min = &minValue.String
 	}
-	if maxNum.Valid {
-		s := strconv.FormatFloat(maxNum.Float64, 'f', -1, 64)
-		p.Max = &s
+	if maxValue.Valid {
+		p.Max = &maxValue.String
 	}
 	if avgNum.Valid && !math.IsNaN(avgNum.Float64) {
 		p.Avg = &avgNum.Float64
@@ -176,6 +176,10 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 func isText(t string) bool {
 	t = strings.ToLower(t)
 	return strings.Contains(t, "char") || strings.Contains(t, "text") || strings.Contains(t, "string")
+}
+func isDateTime(t string) bool {
+	t = strings.ToLower(t)
+	return strings.Contains(t, "date") || strings.Contains(t, "time")
 }
 func isNumeric(t string) bool {
 	t = strings.ToLower(t)
