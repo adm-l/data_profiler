@@ -44,6 +44,34 @@ func Evaluate(p *domain.TableProfile) domain.QualityReport {
 			}
 		}
 
+		// A single distinct value across the table is usually a constant or near-useless column.
+		if c.TotalRows > 0 && c.DistinctCount <= 1 {
+			checks = append(checks, domain.QualityCheck{
+				Name: "constant:" + c.Name, Passed: false, Severity: "warn",
+				Metric: "distinct_count", Threshold: 1, Actual: float64(c.DistinctCount),
+				Details: fmt.Sprintf("only %d distinct value(s) across %d rows", c.DistinctCount, c.TotalRows),
+			})
+		}
+
+		// Very high cardinality is useful for identifiers, but can be suspicious for
+		// fields expected to contain reusable categorical values.
+		if c.TotalRows > 0 && c.DistinctPercentage >= 95 && !isLikelyKey(c.Name) {
+			checks = append(checks, domain.QualityCheck{
+				Name: "high_cardinality:" + c.Name, Passed: true, Severity: "info",
+				Metric: "distinct_percentage", Threshold: 95, Actual: c.DistinctPercentage,
+				Details: fmt.Sprintf("%.2f%% of rows are distinct", c.DistinctPercentage),
+			})
+		}
+
+		// A dominant value can indicate a heavily imbalanced categorical field.
+		if len(c.TopValues) > 0 && c.TopValues[0].Percentage >= 80 {
+			checks = append(checks, domain.QualityCheck{
+				Name: "dominant_value:" + c.Name, Passed: true, Severity: "info",
+				Metric: "top_value_percentage", Threshold: 80, Actual: c.TopValues[0].Percentage,
+				Details: fmt.Sprintf("top value represents %.2f%% of rows", c.TopValues[0].Percentage),
+			})
+		}
+
 		if isTextColumn(c.DataType) {
 			emptyPct := percentage(c.EmptyCount, c.TotalRows)
 			checks = append(checks, domain.QualityCheck{
