@@ -110,19 +110,21 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 	if isNumeric(c.DataType) {
 		q += "," + d.CastText("MIN("+qc+")") + "," + d.CastText("MAX("+qc+")") + ",AVG(" + qc + "),COALESCE(SUM(CASE WHEN " + qc + "=0 THEN 1 ELSE 0 END),0)"
 	} else if isDateTime(c.DataType) {
-		q += "," + d.CastText("MIN("+qc+")") + "," + d.CastText("MAX("+qc+")") + ",NULL,0"
+		q += "," + d.CastText("MIN("+qc+")") + "," + d.CastText("MAX("+qc+")") + ",NULL,0," + d.FutureDateCountExpr(qc) + "," + d.DateRangeDaysExpr(qc)
 	} else {
-		q += ",NULL,NULL,NULL,0"
+		q += ",NULL,NULL,NULL,0,0,0"
 	}
 
 	var minLen, maxLen sql.NullInt64
 	var avgLen sql.NullFloat64
 	var minValue, maxValue sql.NullString
 	var avgNum sql.NullFloat64
+	var futureDateCount sql.NullInt64
+	var dateRangeDays sql.NullFloat64
 	if err := db.QueryRowContext(ctx, q+" FROM "+qt).Scan(
 		&p.NullCount, &p.DistinctCount,
 		&minLen, &maxLen, &avgLen, &p.EmptyCount, &p.WhitespaceCount,
-		&minValue, &maxValue, &avgNum, &p.ZeroCount,
+		&minValue, &maxValue, &avgNum, &p.ZeroCount, &futureDateCount, &dateRangeDays,
 	); err != nil {
 		return p, err
 	}
@@ -148,6 +150,16 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 	}
 	if avgNum.Valid && !math.IsNaN(avgNum.Float64) {
 		p.Avg = &avgNum.Float64
+	}
+	if isDateTime(c.DataType) {
+		if futureDateCount.Valid {
+			p.FutureDateCount = futureDateCount.Int64
+			nonNull := total - p.NullCount
+			if nonNull > 0 { p.FutureDatePercentage = float64(p.FutureDateCount) * 100 / float64(nonNull) }
+		}
+		if dateRangeDays.Valid && !math.IsNaN(dateRangeDays.Float64) {
+			p.DateRangeDays = &dateRangeDays.Float64
+		}
 	}
 
 	q3 := "SELECT " + text + ",COUNT(*) FROM " + qt + " WHERE " + qc + " IS NOT NULL GROUP BY " + text + " ORDER BY COUNT(*) DESC LIMIT 10"
