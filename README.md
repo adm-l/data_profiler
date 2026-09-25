@@ -46,6 +46,22 @@ Then:
 curl http://localhost:8080/api/v1/profile-jobs/{job-id}
 ```
 
+### Phase 2 dirty-data validation
+
+A PostgreSQL fixture is included at `examples/dirty_profile_test.sql`. It intentionally contains NULLs, empty strings, whitespace-only strings, duplicates, zero/negative values, decimals, and timestamps.
+
+```bash
+psql "$DATABASE_URL" -f examples/dirty_profile_test.sql
+```
+
+Profile `public.profile_test_dirty` with the API and verify:
+
+- text columns: `null_count`, `empty_count`, `whitespace_count`, min/max/average length
+- numeric columns: `min`, `max`, `avg`, `zero_count`, standard deviation and percentiles
+- date/time columns: `min` and `max`
+- all columns: `distinct_count` and null percentages
+
+
 ## Architecture
 
 ```text
