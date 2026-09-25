@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"github.com/example/go-data-profiler/internal/domain"
 	"math"
+	""strconv"
 	"strings"
 	"sync"
 )
@@ -179,6 +180,7 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 			p.P90 = nullableFloat(p90)
 			p.P95 = nullableFloat(p95)
 			p.P99 = nullableFloat(p99)
+			addNumericHistogram(ctx, db, d, qt, qc, total, &p)
 			qOut := "SELECT COUNT(*) FROM " + qt + " WHERE " + qc + " IS NOT NULL AND ABS(" + qc + " - (SELECT AVG(" + qc + ") FROM " + qt + ")) > 3 * (SELECT STDDEV_POP(" + qc + ") FROM " + qt + ")"
 			var outliers sql.NullInt64
 			if err := db.QueryRowContext(ctx, qOut).Scan(&outliers); err == nil && outliers.Valid {
@@ -215,4 +217,33 @@ func nullableFloat(v sql.NullFloat64) *float64 {
 		return nil
 	}
 	return &v.Float64
+}
+
+func addNumericHistogram(ctx context.Context, db *sql.DB, d Dialect, table, column string, total int64, p *domain.ColumnProfile) {
+	if p.Min == nil || p.Max == nil || total-p.NullCount <= 0 { return }
+	min, errMin := strconv.ParseFloat(*p.Min, 64)
+	max, errMax := strconv.ParseFloat(*p.Max, 64)
+	if errMin != nil || errMax != nil { return }
+	nonNull := total - p.NullCount
+	if min == max {
+		p.Histogram = []domain.HistogramBin{{Lower:min, Upper:max, Count:nonNull, Percentage:100}}
+		return
+	}
+	counts := make([]int64, 10)
+	rows, err := db.QueryContext(ctx, d.NumericHistogramQuery(column, table))
+	if err != nil { return }
+	defer rows.Close()
+	for rows.Next() {
+		var bucket int
+		var count int64
+		if err := rows.Scan(&bucket, &count); err == nil && bucket >= 0 && bucket < 10 { counts[bucket] = count }
+	}
+	width := (max-min)/10
+	for i,count := range counts {
+		if count == 0 { continue }
+		lower := min+float64(i)*width
+		upper := min+float64(i+1)*width
+		if i == 9 { upper=max }
+		p.Histogram=append(p.Histogram, domain.HistogramBin{Lower:lower,Upper:upper,Count:count,Percentage:float64(count)*100/float64(nonNull)})
+	}
 }
