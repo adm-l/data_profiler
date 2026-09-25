@@ -95,7 +95,7 @@ func (m *Manager) run(parent context.Context, id string) {
 				p.Columns[i].PII = detection.Label
 				p.Columns[i].PIIConfidence = detection.Confidence
 			}
-			p.Quality = quality.Evaluate(p)
+			p.Quality = quality.Evaluate(p, j.Request.QualityRules)
 			p.CreatedAt = time.Now().UTC()
 
 			// Compare this snapshot with the most recent completed profile
