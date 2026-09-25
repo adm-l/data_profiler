@@ -96,7 +96,7 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 	if isText(c.DataType) {
 		q += ",COALESCE(MIN(" + d.LengthExpr(qc) + "),0),COALESCE(MAX(" + d.LengthExpr(qc) + "),0),AVG(" + d.LengthExpr(qc) + "),COALESCE(SUM(CASE WHEN " + qc + " IS NOT NULL AND " + qc + "='' THEN 1 ELSE 0 END),0)"
 	} else {
-		q += ",NULL,NULL,NULL,NULL"
+		q += ",0,0,0,0"
 	}
 	if isNumeric(c.DataType) {
 		q += ",MIN(" + qc + "),MAX(" + qc + "),AVG(" + qc + ")"
