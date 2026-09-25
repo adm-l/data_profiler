@@ -13,6 +13,7 @@ type Store interface {
 	GetJob(context.Context, string) (*domain.Job, error)
 	SaveProfile(context.Context, string, *domain.TableProfile) error
 	GetLatestProfile(context.Context, string) (*domain.TableProfile, error)
+	GetPreviousProfile(context.Context, string, string) (*domain.TableProfile, error)
 }
 type PostgresStore struct{ db *sql.DB }
 
@@ -46,6 +47,18 @@ func (s *PostgresStore) SaveProfile(ctx context.Context, id string, p *domain.Ta
 func (s *PostgresStore) GetLatestProfile(ctx context.Context, id string) (*domain.TableProfile, error) {
 	var b []byte
 	err := s.db.QueryRowContext(ctx, `SELECT payload FROM profiles WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1`, id).Scan(&b)
+	if err != nil {
+		return nil, err
+	}
+	var p domain.TableProfile
+	err = json.Unmarshal(b, &p)
+	return &p, err
+}
+
+
+func (s *PostgresStore) GetPreviousProfile(ctx context.Context, schema, table string) (*domain.TableProfile, error) {
+	var b []byte
+	err := s.db.QueryRowContext(ctx, `SELECT payload FROM profiles WHERE schema_name=$1 AND table_name=$2 ORDER BY created_at DESC LIMIT 1`, schema, table).Scan(&b)
 	if err != nil {
 		return nil, err
 	}
