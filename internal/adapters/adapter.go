@@ -82,6 +82,7 @@ type Dialect interface {
 	CountExpr(string) string
 	LengthExpr(string) string
 	CastText(string) string
+	NumericStatsExpr(string) string
 }
 type PostgresDialect struct{}
 
@@ -94,7 +95,10 @@ func (PostgresDialect) ColumnsQuery() string {
 }
 func (PostgresDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
 func (PostgresDialect) LengthExpr(c string) string { return `LENGTH(` + c + `)` }
-func (PostgresDialect) CastText(c string) string   { return `CAST(` + c + ` AS TEXT)` }
+func (PostgresDialect) CastText(c string) string { return `CAST(` + c + ` AS TEXT)` }
+func (PostgresDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ")"
+}
 
 type MySQLDialect struct{}
 
@@ -107,7 +111,10 @@ func (MySQLDialect) ColumnsQuery() string {
 }
 func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
 func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
-func (MySQLDialect) CastText(c string) string   { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ")"
+}
 
 type SQLServerDialect struct{}
 
@@ -120,7 +127,10 @@ func (SQLServerDialect) ColumnsQuery() string {
 }
 func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
 func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
-func (SQLServerDialect) CastText(c string) string   { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
 
 type SQLAdapter struct {
 	db      *sql.DB
