@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -51,6 +52,43 @@ func NewRouter(d Dependencies) http.Handler {
 				return
 			}
 			write(w, 200, j)
+		})
+		r.Get("/profiles/history", func(w http.ResponseWriter, req *http.Request) {
+			schema := strings.TrimSpace(req.URL.Query().Get("schema"))
+			table := strings.TrimSpace(req.URL.Query().Get("table"))
+			if schema == "" || table == "" {
+				http.Error(w, "schema and table are required", http.StatusBadRequest)
+				return
+			}
+			limit := 20
+			if raw := req.URL.Query().Get("limit"); raw != "" {
+				n, err := strconv.Atoi(raw)
+				if err != nil || n < 1 || n > 100 {
+					http.Error(w, "limit must be between 1 and 100", http.StatusBadRequest)
+					return
+				}
+				limit = n
+			}
+			profiles, err := d.Store.GetProfileHistory(req.Context(), schema, table, limit)
+			if err != nil {
+				http.Error(w, "history not found", http.StatusNotFound)
+				return
+			}
+			write(w, http.StatusOK, profiles)
+		})
+		r.Get("/profiles/drift", func(w http.ResponseWriter, req *http.Request) {
+			schema := strings.TrimSpace(req.URL.Query().Get("schema"))
+			table := strings.TrimSpace(req.URL.Query().Get("table"))
+			if schema == "" || table == "" {
+				http.Error(w, "schema and table are required", http.StatusBadRequest)
+				return
+			}
+			profiles, err := d.Store.GetProfileHistory(req.Context(), schema, table, 1)
+			if err != nil || len(profiles) == 0 || profiles[0].Drift == nil {
+				http.Error(w, "drift not found", http.StatusNotFound)
+				return
+			}
+			write(w, http.StatusOK, profiles[0].Drift)
 		})
 		r.Get("/profile-jobs/{id}/result", func(w http.ResponseWriter, req *http.Request) {
 			p, e := d.Store.GetLatestProfile(req.Context(), chi.URLParam(req, "id"))
