@@ -89,6 +89,7 @@ type Dialect interface {
 	DateRangeDaysExpr(string) string
 	DateDistributionQuery(string, string) string
 	PatternCountsQuery(string, string) string
+	NumericCorrelationQuery(string, string, string) string
 	SampleTableExpr(string, int, int64) (string, bool, error)
 }
 type PostgresDialect struct{}
@@ -112,6 +113,7 @@ func (PostgresDialect) NumericHistogramQuery(c, table string) string {
 }
 func (PostgresDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
 func (PostgresDialect) DateRangeDaysExpr(c string) string { return "EXTRACT(EPOCH FROM (MAX(" + c + ") - MIN(" + c + ")))/86400.0" }
+func (PostgresDialect) NumericCorrelationQuery(x, y, table string) string { return "SELECT CORR(" + x + "," + y + ") FROM " + table + " WHERE " + x + " IS NOT NULL AND " + y + " IS NOT NULL" }
 func (PostgresDialect) PatternCountsQuery(c, table string) string {
 	return "SELECT CASE WHEN " + c + " ~* '^[^@\\s]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
 func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
@@ -143,6 +145,7 @@ func (MySQLDialect) NumericHistogramQuery(c, table string) string {
 }
 func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
 func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) NumericCorrelationQuery(x, y, table string) string { return "SELECT (COUNT(*)*SUM("+x+"*"+y+")-SUM("+x+")*SUM("+y+"))/NULLIF(SQRT((COUNT(*)*SUM("+x+"*"+x+")-SUM("+x+")*SUM("+x+"))*(COUNT(*)*SUM("+y+"*"+y+")-SUM("+y+")*SUM("+y+"))),0) FROM "+table+" WHERE "+x+" IS NOT NULL AND "+y+" IS NOT NULL" }
 func (MySQLDialect) PatternCountsQuery(c, table string) string {
 	return "SELECT CASE WHEN " + c + " REGEXP '^[^@[:space:]]+@[A-Za-z0-9.-]+\\\\.[A-Za-z]{2,}(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
 func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
@@ -173,6 +176,7 @@ func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
 }
 func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
 func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) NumericCorrelationQuery(x, y, table string) string { return "SELECT (COUNT_BIG(*)*SUM("+x+"*"+y+")-SUM("+x+")*SUM("+y+"))/NULLIF(SQRT((COUNT_BIG(*)*SUM("+x+"*"+x+")-SUM("+x+")*SUM("+x+"))*(COUNT_BIG(*)*SUM("+y+"*"+y+")-SUM("+y+")*SUM("+y+"))),0) FROM "+table+" WHERE "+x+" IS NOT NULL AND "+y+" IS NOT NULL" }
 func (SQLServerDialect) PatternCountsQuery(c, table string) string {
 	return "SELECT CASE WHEN " + c + " LIKE '%@%.%' THEN 'email' WHEN " + c + " LIKE '________-____-____-____-____________' THEN 'uuid' WHEN " + c + " LIKE 'http://%' OR " + c + " LIKE 'https://%' THEN 'url' WHEN " + c + " LIKE '[0-9][0-9][0-9][0-9][- /][0-9][0-9][- /][0-9][0-9]' THEN 'date' WHEN " + c + " NOT LIKE '%[^0-9]%' THEN 'integer_string' WHEN " + c + " NOT LIKE '%[^A-Za-z]%' THEN 'alphabetic' WHEN " + c + " NOT LIKE '%[^A-Za-z0-9]%' THEN 'alphanumeric' ELSE 'mixed' END,COUNT_BIG(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY CASE WHEN " + c + " LIKE '%@%.%' THEN 'email' WHEN " + c + " LIKE '________-____-____-____-____________' THEN 'uuid' WHEN " + c + " LIKE 'http://%' OR " + c + " LIKE 'https://%' THEN 'url' WHEN " + c + " LIKE '[0-9][0-9][0-9][0-9][- /][0-9][0-9][- /][0-9][0-9]' THEN 'date' WHEN " + c + " NOT LIKE '%[^0-9]%' THEN 'integer_string' WHEN " + c + " NOT LIKE '%[^A-Za-z]%' THEN 'alphabetic' WHEN " + c + " NOT LIKE '%[^A-Za-z0-9]%' THEN 'alphanumeric' ELSE 'mixed' END ORDER BY COUNT_BIG(*) DESC"
 }
