@@ -53,12 +53,14 @@ type ValueCount struct {
 	Percentage float64 `json:"percentage"`
 }
 type TableProfile struct {
-	Schema    string          `json:"schema"`
-	Table     string          `json:"table"`
-	TotalRows int64           `json:"total_rows"`
-	Columns   []ColumnProfile `json:"columns"`
-	Quality   QualityReport   `json:"quality"`
-	CreatedAt time.Time       `json:"created_at"`
+	Schema     string          `json:"schema"`
+	Table      string          `json:"table"`
+	TotalRows  int64           `json:"total_rows"`
+	Sampled    bool            `json:"sampled"`
+	SampleSize int             `json:"sample_size,omitempty"`
+	Columns    []ColumnProfile `json:"columns"`
+	Quality    QualityReport   `json:"quality"`
+	CreatedAt  time.Time       `json:"created_at"`
 }
 type QualityReport struct {
 	Score  float64        `json:"score"`
