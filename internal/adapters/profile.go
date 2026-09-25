@@ -92,7 +92,7 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 	// are scanned through sql.Null* so empty/all-NULL columns do not fail profiling.
 	q := "SELECT COUNT(*)-COUNT(" + qc + "),COUNT(DISTINCT " + qc + ")"
 	if isText(c.DataType) {
-		q += ",COALESCE(MIN(" + d.LengthExpr(qc) + "),0),COALESCE(MAX(" + d.LengthExpr(qc) + "),0),AVG(" + d.LengthExpr(qc) + "),COALESCE(SUM(CASE WHEN " + qc + " IS NOT NULL AND " + qc + "='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN " + qc + " IS NOT NULL AND " + qc + "<>'' AND TRIM(" + qc + ")='' THEN 1 ELSE 0 END),0),NULL"
+		q += ",COALESCE(MIN(" + d.LengthExpr(qc) + "),0),COALESCE(MAX(" + d.LengthExpr(qc) + "),0),AVG(" + d.LengthExpr(qc) + "),COALESCE(SUM(CASE WHEN " + qc + " IS NOT NULL AND " + qc + "='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN " + qc + " IS NOT NULL AND " + qc + "<>'' AND TRIM(" + qc + ")='' THEN 1 ELSE 0 END),0)"
 	} else {
 		q += ",0,0,0,0,0"
 	}
