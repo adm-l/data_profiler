@@ -17,6 +17,10 @@ func ProfileTable(ctx context.Context, db *sql.DB, d Dialect, schema, table stri
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+qt).Scan(&total); err != nil {
 		return nil, err
 	}
+	sampledFrom, sampled, err := d.SampleTableExpr(qt, sample, total)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := db.QueryContext(ctx, d.ColumnsQuery(), schema, table)
 	if err != nil {
 		return nil, err
@@ -58,7 +62,7 @@ func ProfileTable(ctx context.Context, db *sql.DB, d Dialect, schema, table stri
 				return
 			}
 			defer func() { <-sem }()
-			p, e := profileColumn(ctx, db, d, qt, c, total)
+			p, e := profileColumn(ctx, db, d, sampledFrom, c, total)
 			mu.Lock()
 			defer mu.Unlock()
 			if e != nil && first == nil {
@@ -72,7 +76,7 @@ func ProfileTable(ctx context.Context, db *sql.DB, d Dialect, schema, table stri
 	if first != nil {
 		return nil, first
 	}
-	return &domain.TableProfile{Schema: schema, Table: table, TotalRows: total, Columns: out}, nil
+	return &domain.TableProfile{Schema: schema, Table: table, TotalRows: total, Sampled: sampled, SampleSize: sample, Columns: out}, nil
 }
 func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c ColumnMeta, total int64) (domain.ColumnProfile, error) {
 	qc := d.Quote(c.Name)
