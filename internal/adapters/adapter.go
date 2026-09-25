@@ -85,6 +85,8 @@ type Dialect interface {
 	CastText(string) string
 	NumericStatsExpr(string) string
 	NumericHistogramQuery(string, string) string
+	FutureDateCountExpr(string) string
+	DateRangeDaysExpr(string) string
 	SampleTableExpr(string, int, int64) (string, bool, error)
 }
 type PostgresDialect struct{}
@@ -106,6 +108,8 @@ func (PostgresDialect) NumericHistogramQuery(c, table string) string {
 	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + ")),0) * 10)::int) END"
 	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
 }
+func (PostgresDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (PostgresDialect) DateRangeDaysExpr(c string) string { return "EXTRACT(EPOCH FROM (MAX(" + c + ") - MIN(" + c + ")))/86400.0" }
 func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
 		return table, false, nil
@@ -133,6 +137,8 @@ func (MySQLDialect) NumericHistogramQuery(c, table string) string {
 	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
 	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
 }
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
 func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
 		return table, false, nil
@@ -159,6 +165,8 @@ func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
 	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
 	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
 }
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
 func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
 		return table, false, nil
