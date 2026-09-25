@@ -26,9 +26,11 @@ type ColumnProfile struct {
 	DataType      string       `json:"data_type"`
 	Nullable      bool         `json:"nullable"`
 	TotalRows     int64        `json:"total_rows"`
-	NullCount     int64        `json:"null_count"`
-	DistinctCount int64        `json:"distinct_count"`
-	EmptyCount    int64        `json:"empty_count"`
+	NullCount          int64        `json:"null_count"`
+	NullPercentage     float64      `json:"null_percentage"`
+	DistinctCount      int64        `json:"distinct_count"`
+	DistinctPercentage float64      `json:"distinct_percentage"`
+	EmptyCount         int64        `json:"empty_count"`
 	Min           *string      `json:"min,omitempty"`
 	Max           *string      `json:"max,omitempty"`
 	Avg           *float64     `json:"avg,omitempty"`
@@ -38,8 +40,9 @@ type ColumnProfile struct {
 	PII           string       `json:"pii,omitempty"`
 }
 type ValueCount struct {
-	Value string `json:"value"`
-	Count int64  `json:"count"`
+	Value      string  `json:"value"`
+	Count      int64   `json:"count"`
+	Percentage float64 `json:"percentage"`
 }
 type TableProfile struct {
 	Schema    string          `json:"schema"`
