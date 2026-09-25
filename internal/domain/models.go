@@ -52,6 +52,8 @@ type ColumnProfile struct {
 	OutlierCount       int64        `json:"outlier_count,omitempty"`
 	OutlierPercentage  float64      `json:"outlier_percentage,omitempty"`
 	Histogram          []HistogramBin `json:"histogram,omitempty"`
+	Entropy             *float64       `json:"entropy,omitempty"`
+	NormalizedEntropy   *float64       `json:"normalized_entropy,omitempty"`
 }
 type HistogramBin struct {
 	Lower      float64 `json:"lower"`
