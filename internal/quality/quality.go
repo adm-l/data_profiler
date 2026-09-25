@@ -128,6 +128,15 @@ func Evaluate(p *domain.TableProfile, rules *domain.QualityRules) domain.Quality
 			})
 		}
 
+		if isDateTimeColumn(c.DataType) && c.FutureDateCount > 0 {
+			checks = append(checks, domain.QualityCheck{
+				Name: "future_dates:" + c.Name, Passed: false, Severity: "warn",
+				Metric: "future_date_percentage", Threshold: 0, Actual: c.FutureDatePercentage,
+				Details: fmt.Sprintf("%d future date value(s) (%.2f%% of non-null values)", c.FutureDateCount, c.FutureDatePercentage),
+			})
+			score -= 3
+		}
+
 		if isNumericColumn(c.DataType) && c.ZeroCount > 0 {
 			zeroPct := percentage(c.ZeroCount, c.TotalRows-c.NullCount)
 			checks = append(checks, domain.QualityCheck{
@@ -175,6 +184,11 @@ func isLikelyKey(n string) bool {
 func isTextColumn(t string) bool {
 	t = lower(t)
 	return containsAny(t, "char", "text", "string")
+}
+
+func isDateTimeColumn(t string) bool {
+	t = lower(t)
+	return containsAny(t, "date", "time", "timestamp")
 }
 
 func isNumericColumn(t string) bool {
