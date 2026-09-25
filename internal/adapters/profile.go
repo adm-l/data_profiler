@@ -130,6 +130,20 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 				p.Avg = &avg.Float64
 			}
 		}
+
+		var stddev, median, p75, p90, p95, p99 sql.NullFloat64
+		q5 := "SELECT " + d.NumericStatsExpr(qc) + " FROM " + qt
+		if err := db.QueryRowContext(ctx, q5).Scan(&stddev, &median, &p75, &p90, &p95, &p99); err == nil {
+			if stddev.Valid && !math.IsNaN(stddev.Float64) {
+				p.StdDev = &stddev.Float64
+			}
+			p.Median = nullableFloat(median)
+			p.P50 = p.Median
+			p.P75 = nullableFloat(p75)
+			p.P90 = nullableFloat(p90)
+			p.P95 = nullableFloat(p95)
+			p.P99 = nullableFloat(p99)
+		}
 	}
 	return p, nil
 }
@@ -148,3 +162,11 @@ func isNumeric(t string) bool {
 }
 
 var _ = fmt.Sprintf
+
+
+func nullableFloat(v sql.NullFloat64) *float64 {
+	if !v.Valid || math.IsNaN(v.Float64) {
+		return nil
+	}
+	return &v.Float64
+}
