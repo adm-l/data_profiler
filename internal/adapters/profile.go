@@ -3,7 +3,6 @@ package adapters
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"github.com/example/go-data-profiler/internal/domain"
 	"math"
 	"strings"
@@ -81,7 +80,18 @@ func ProfileTable(ctx context.Context, db *sql.DB, d Dialect, schema, table stri
 	if first != nil {
 		return nil, first
 	}
-	return &domain.TableProfile{Schema: schema, Table: table, TotalRows: total, Sampled: sampled, SampleSize: sample, Columns: out}, nil
+	result := &domain.TableProfile{Schema: schema, Table: table, TotalRows: total, Sampled: sampled, SampleSize: sample, Columns: out}
+	if len(cols) > 0 {
+		groupCols := make([]string, len(cols))
+		for i, col := range cols { groupCols[i] = d.Quote(col.Name) }
+		qdup := "SELECT COALESCE(SUM(n-1),0) FROM (SELECT COUNT(*) AS n FROM " + sampledFrom + " GROUP BY " + strings.Join(groupCols, ",") + ") duplicates"
+		var dup sql.NullInt64
+		if err := db.QueryRowContext(ctx, qdup).Scan(&dup); err == nil && dup.Valid {
+			result.DuplicateRowCount = dup.Int64
+			if profileRows > 0 { result.DuplicateRowPercentage = float64(dup.Int64) * 100 / float64(profileRows) }
+		}
+	}
+	return result, nil
 }
 func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c ColumnMeta, total int64) (domain.ColumnProfile, error) {
 	qc := d.Quote(c.Name)
@@ -169,6 +179,13 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 			p.P90 = nullableFloat(p90)
 			p.P95 = nullableFloat(p95)
 			p.P99 = nullableFloat(p99)
+			qOut := "SELECT COUNT(*) FROM " + qt + " WHERE " + qc + " IS NOT NULL AND ABS(" + qc + " - (SELECT AVG(" + qc + ") FROM " + qt + ")) > 3 * (SELECT STDDEV_POP(" + qc + ") FROM " + qt + ")"
+			var outliers sql.NullInt64
+			if err := db.QueryRowContext(ctx, qOut).Scan(&outliers); err == nil && outliers.Valid {
+				p.OutlierCount = outliers.Int64
+				nonNull := total - p.NullCount
+				if nonNull > 0 { p.OutlierPercentage = float64(p.OutlierCount) * 100 / float64(nonNull) }
+			}
 		}
 	}
 	return p, nil
@@ -191,7 +208,6 @@ func isNumeric(t string) bool {
 	return false
 }
 
-var _ = fmt.Sprintf
 
 
 func nullableFloat(v sql.NullFloat64) *float64 {
