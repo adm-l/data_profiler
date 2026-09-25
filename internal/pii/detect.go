@@ -13,25 +13,24 @@ type Detection struct {
 }
 
 var (
-	emailRE       = regexp.MustCompile(`(?i)^[^@\s]+@[^@\s]+\.[^@\s]+$`)
-	phoneRE       = regexp.MustCompile(`^\+?[0-9][0-9 .()-]{7,20}$`)
-	uuidRE        = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-	ipv4RE        = regexp.MustCompile(`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$`)
-	panRE         = regexp.MustCompile(`^[A-Z]{5}[0-9]{4}[A-Z]$`)
-	aadhaarRE     = regexp.MustCompile(`^[0-9]{12}$`)
-	cardRE        = regexp.MustCompile(`^[0-9 -]{13,23}$`)
+	emailRE   = regexp.MustCompile(`(?i)^[^@\s]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$`)
+	phoneRE   = regexp.MustCompile(`^\+?[0-9][0-9 .()-]{7,20}$`)
+	uuidRE    = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	ipv4RE    = regexp.MustCompile(`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$`)
+	panRE     = regexp.MustCompile(`^[A-Z]{5}[0-9]{4}[A-Z]$`)
+	aadhaarRE = regexp.MustCompile(`^[0-9]{12}$`)
 )
 
 var headerRules = map[string][]string{
-	"email":       {"email", "e_mail", "email_address"},
-	"phone":       {"phone", "mobile", "telephone", "phone_number"},
-	"person_name": {"first_name", "last_name", "full_name", "person_name", "name"},
+	"email":         {"email", "e_mail", "email_address"},
+	"phone":         {"phone", "mobile", "telephone", "phone_number"},
+	"person_name":   {"first_name", "last_name", "full_name", "person_name", "name"},
 	"date_of_birth": {"dob", "birth_date", "date_of_birth"},
-	"address":     {"address", "street", "city", "postal_code", "zip"},
+	"address":       {"address", "street", "city", "postal_code", "zip"},
 	"government_id": {"ssn", "aadhaar", "aadhar", "pan", "passport", "national_id", "government_id"},
-	"credit_card": {"card_number", "credit_card", "credit_card_number"},
-	"ip_address":  {"ip", "ip_address", "ipv4", "ipv6"},
-	"uuid":        {"uuid"},
+	"credit_card":   {"card_number", "credit_card", "credit_card_number"},
+	"ip_address":    {"ip", "ip_address", "ipv4", "ipv6"},
+	"uuid":          {"uuid"},
 }
 
 func Detect(column string, dataType string) string {
@@ -42,8 +41,6 @@ func Detect(column string, dataType string) string {
 func DetectProfile(column string, dataType string, values []domain.ValueCount) Detection {
 	header := normalize(column)
 
-	// Column names are useful evidence, but not enough on their own for
-	// ambiguous names such as "name" or "id".
 	for label, names := range headerRules {
 		for _, rule := range names {
 			if header == rule || strings.Contains(header, rule) {
@@ -51,36 +48,47 @@ func DetectProfile(column string, dataType string, values []domain.ValueCount) D
 				if label == "person_name" && header == "name" {
 					confidence = 0.65
 				}
-				if valuesMatch(label, values) {
+
+				ratio := valueMatchRatio(label, values)
+				switch {
+				case ratio >= 0.80:
 					confidence = 0.95
+				case ratio >= 0.50:
+					confidence = 0.85
 				}
 				return Detection{Label: label, Confidence: confidence}
 			}
 		}
 	}
 
-	// Pattern evidence catches columns whose names are generic or misleading.
 	for _, label := range []string{"email", "phone", "credit_card", "government_id", "uuid", "ip_address"} {
-		if valuesMatch(label, values) {
+		ratio := valueMatchRatio(label, values)
+		if ratio >= 0.80 {
 			return Detection{Label: label, Confidence: 0.90}
 		}
+		if ratio >= 0.50 {
+			return Detection{Label: label, Confidence: 0.80}
+		}
 	}
+
 	return Detection{}
 }
 
-func valuesMatch(label string, values []domain.ValueCount) bool {
-	checked := 0
-	matches := 0
+func valueMatchRatio(label string, values []domain.ValueCount) float64 {
+	var checked, matches int64
 	for _, v := range values {
 		if strings.TrimSpace(v.Value) == "" {
 			continue
 		}
-		checked++
+		checked += v.Count
 		if matchesLabel(label, strings.TrimSpace(v.Value)) {
-			matches++
+			matches += v.Count
 		}
 	}
-	return checked > 0 && matches >= 1 && float64(matches)/float64(checked) >= 0.5
+	if checked == 0 {
+		return 0
+	}
+	return float64(matches) / float64(checked)
 }
 
 func matchesLabel(label, value string) bool {
@@ -99,10 +107,26 @@ func matchesLabel(label, value string) bool {
 	case "uuid":
 		return uuidRE.MatchString(value)
 	case "ip_address":
-		return ipv4RE.MatchString(value)
+		return validIPv4(value)
 	default:
 		return false
 	}
+}
+
+func validIPv4(value string) bool {
+	if !ipv4RE.MatchString(value) {
+		return false
+	}
+	for _, part := range strings.Split(value, ".") {
+		n := 0
+		for _, r := range part {
+			n = n*10 + int(r-'0')
+		}
+		if n > 255 {
+			return false
+		}
+	}
+	return true
 }
 
 func digitsOnly(s string) string {
