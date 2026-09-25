@@ -106,7 +106,7 @@ func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (s
 		return table, false, nil
 	}
 	pct := float64(sample) * 100 / float64(total)
-	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
 }
 
 type MySQLDialect struct{}
