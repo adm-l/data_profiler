@@ -34,6 +34,13 @@ type ColumnProfile struct {
 	Min           *string      `json:"min,omitempty"`
 	Max           *string      `json:"max,omitempty"`
 	Avg           *float64     `json:"avg,omitempty"`
+	StdDev        *float64     `json:"stddev,omitempty"`
+	Median        *float64     `json:"median,omitempty"`
+	P50           *float64     `json:"p50,omitempty"`
+	P75           *float64     `json:"p75,omitempty"`
+	P90           *float64     `json:"p90,omitempty"`
+	P95           *float64     `json:"p95,omitempty"`
+	P99           *float64     `json:"p99,omitempty"`
 	MinLength     *int64       `json:"min_length,omitempty"`
 	MaxLength     *int64       `json:"max_length,omitempty"`
 	AvgLength     *float64     `json:"avg_length,omitempty"`
