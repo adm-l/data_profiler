@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/example/go-data-profiler/internal/domain"
@@ -83,6 +84,7 @@ type Dialect interface {
 	LengthExpr(string) string
 	CastText(string) string
 	NumericStatsExpr(string) string
+	SampleTableExpr(string, int, int64) (string, bool, error)
 }
 type PostgresDialect struct{}
 
@@ -99,6 +101,13 @@ func (PostgresDialect) CastText(c string) string { return `CAST(` + c + ` AS TEX
 func (PostgresDialect) NumericStatsExpr(c string) string {
 	return "STDDEV_POP(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ")"
 }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
 
 type MySQLDialect struct{}
 
@@ -113,10 +122,13 @@ func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
 func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
 func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
 func (MySQLDialect) NumericStatsExpr(c string) string {
-	// MySQL does not provide PostgreSQL/SQL Server-style PERCENTILE_CONT.
-	// Keep this query portable and expose stddev; percentile support can be
-	// added later with an explicit ordered-sample strategy.
 	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
 }
 
 type SQLServerDialect struct{}
@@ -133,6 +145,12 @@ func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
 func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
 func (SQLServerDialect) NumericStatsExpr(c string) string {
 	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
 }
 
 type SQLAdapter struct {
