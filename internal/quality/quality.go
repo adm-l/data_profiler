@@ -6,23 +6,41 @@ import (
 	"github.com/example/go-data-profiler/internal/domain"
 )
 
-const completenessThreshold = 20.0
+const (
+	defaultCompletenessThreshold = 20.0
+	defaultDominantValueThreshold = 80.0
+	defaultHighCardinalityThreshold = 95.0
+)
 
-func Evaluate(p *domain.TableProfile) domain.QualityReport {
+func Evaluate(p *domain.TableProfile, rules *domain.QualityRules) domain.QualityReport {
+	nullThreshold := defaultCompletenessThreshold
+	dominantThreshold := defaultDominantValueThreshold
+	highCardinalityThreshold := defaultHighCardinalityThreshold
+	allowEmpty, allowWhitespace := false, false
+	if rules != nil {
+		if rules.NullPercentageThreshold != nil { nullThreshold = *rules.NullPercentageThreshold }
+		if rules.DominantValuePercentage != nil { dominantThreshold = *rules.DominantValuePercentage }
+		if rules.HighCardinalityPercentage != nil { highCardinalityThreshold = *rules.HighCardinalityPercentage }
+		if rules.AllowEmpty != nil { allowEmpty = *rules.AllowEmpty }
+		if rules.AllowWhitespace != nil { allowWhitespace = *rules.AllowWhitespace }
+	}
+	if nullThreshold < 0 || nullThreshold > 100 { nullThreshold = defaultCompletenessThreshold }
+	if dominantThreshold < 0 || dominantThreshold > 100 { dominantThreshold = defaultDominantValueThreshold }
+	if highCardinalityThreshold < 0 || highCardinalityThreshold > 100 { highCardinalityThreshold = defaultHighCardinalityThreshold }
 	var checks []domain.QualityCheck
 	score := 100.0
 
 	for _, c := range p.Columns {
 		nullPct := percentage(c.NullCount, c.TotalRows)
-		completenessPassed := nullPct < completenessThreshold
+		completenessPassed := nullPct <= nullThreshold
 		checks = append(checks, domain.QualityCheck{
 			Name:      "completeness:" + c.Name,
 			Passed:    completenessPassed,
 			Severity:  severity(completenessPassed, "fail"),
 			Metric:    "null_percentage",
-			Threshold: completenessThreshold,
+			Threshold: nullThreshold,
 			Actual:    nullPct,
-			Details:   fmt.Sprintf("null %.2f%% (threshold %.2f%%)", nullPct, completenessThreshold),
+			Details:   fmt.Sprintf("null %.2f%% (threshold %.2f%%)", nullPct, nullThreshold),
 		})
 		if !completenessPassed {
 			score -= 10
@@ -55,19 +73,19 @@ func Evaluate(p *domain.TableProfile) domain.QualityReport {
 
 		// Very high cardinality is useful for identifiers, but can be suspicious for
 		// fields expected to contain reusable categorical values.
-		if c.TotalRows > 0 && c.DistinctPercentage >= 95 && !isLikelyKey(c.Name) {
+		if c.TotalRows > 0 && c.DistinctPercentage >= highCardinalityThreshold && !isLikelyKey(c.Name) {
 			checks = append(checks, domain.QualityCheck{
 				Name: "high_cardinality:" + c.Name, Passed: true, Severity: "info",
-				Metric: "distinct_percentage", Threshold: 95, Actual: c.DistinctPercentage,
+				Metric: "distinct_percentage", Threshold: highCardinalityThreshold, Actual: c.DistinctPercentage,
 				Details: fmt.Sprintf("%.2f%% of rows are distinct", c.DistinctPercentage),
 			})
 		}
 
 		// A dominant value can indicate a heavily imbalanced categorical field.
-		if len(c.TopValues) > 0 && c.TopValues[0].Percentage >= 80 {
+		if len(c.TopValues) > 0 && c.TopValues[0].Percentage >= dominantThreshold {
 			checks = append(checks, domain.QualityCheck{
 				Name: "dominant_value:" + c.Name, Passed: true, Severity: "info",
-				Metric: "top_value_percentage", Threshold: 80, Actual: c.TopValues[0].Percentage,
+				Metric: "top_value_percentage", Threshold: dominantThreshold, Actual: c.TopValues[0].Percentage,
 				Details: fmt.Sprintf("top value represents %.2f%% of rows", c.TopValues[0].Percentage),
 			})
 		}
@@ -76,28 +94,28 @@ func Evaluate(p *domain.TableProfile) domain.QualityReport {
 			emptyPct := percentage(c.EmptyCount, c.TotalRows)
 			checks = append(checks, domain.QualityCheck{
 				Name:      "empty:" + c.Name,
-				Passed:    c.EmptyCount == 0,
+				Passed:    allowEmpty || c.EmptyCount == 0,
 				Severity:  severity(c.EmptyCount == 0, "warn"),
 				Metric:    "empty_percentage",
 				Threshold: 0,
 				Actual:    emptyPct,
 				Details:   fmt.Sprintf("empty %.2f%%", emptyPct),
 			})
-			if c.EmptyCount > 0 {
+			if c.EmptyCount > 0 && !allowEmpty {
 				score -= 3
 			}
 
 			whitespacePct := percentage(c.WhitespaceCount, c.TotalRows)
 			checks = append(checks, domain.QualityCheck{
 				Name:      "whitespace:" + c.Name,
-				Passed:    c.WhitespaceCount == 0,
+				Passed:    allowWhitespace || c.WhitespaceCount == 0,
 				Severity:  severity(c.WhitespaceCount == 0, "warn"),
 				Metric:    "whitespace_percentage",
 				Threshold: 0,
 				Actual:    whitespacePct,
 				Details:   fmt.Sprintf("whitespace-only %.2f%%", whitespacePct),
 			})
-			if c.WhitespaceCount > 0 {
+			if c.WhitespaceCount > 0 && !allowWhitespace {
 				score -= 2
 			}
 		}
