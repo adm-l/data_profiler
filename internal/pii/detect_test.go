@@ -29,6 +29,34 @@ func TestDetectProfileUsesValueEvidence(t *testing.T) {
 	}
 }
 
+func TestDetectProfileRejectsInvalidEmailEvidence(t *testing.T) {
+	values := []domain.ValueCount{
+		{Value: "c@test.com", Count: 1},
+		{Value: "d@test.com", Count: 1},
+		{Value: "b@. test.com", Count: 1},
+		{Value: "a@test.com", Count: 1},
+	}
+	d := DetectProfile("email", "text", values)
+	if d.Label != "email" {
+		t.Fatalf("expected header-based email classification, got %q", d.Label)
+	}
+	if d.Confidence >= 0.95 {
+		t.Fatalf("expected reduced confidence when one value is invalid, got %.2f", d.Confidence)
+	}
+	if matchesLabel("email", "b@. test.com") {
+		t.Fatal("invalid email should not match")
+	}
+}
+
+func TestDetectProfileRejectsInvalidIPv4(t *testing.T) {
+	if matchesLabel("ip_address", "999.1.1.1") {
+		t.Fatal("invalid IPv4 should not match")
+	}
+	if !matchesLabel("ip_address", "192.168.1.10") {
+		t.Fatal("valid IPv4 should match")
+	}
+}
+
 func TestDetectProfileCreditCardUsesLuhn(t *testing.T) {
 	values := []domain.ValueCount{{Value: "4111 1111 1111 1111", Count: 2}}
 	d := DetectProfile("payment_value", "text", values)
