@@ -51,6 +51,13 @@ type ColumnProfile struct {
 	PIIConfidence      float64      `json:"pii_confidence,omitempty"`
 	OutlierCount       int64        `json:"outlier_count,omitempty"`
 	OutlierPercentage  float64      `json:"outlier_percentage,omitempty"`
+	Histogram          []HistogramBin `json:"histogram,omitempty"`
+}
+type HistogramBin struct {
+	Lower      float64 `json:"lower"`
+	Upper      float64 `json:"upper"`
+	Count      int64   `json:"count"`
+	Percentage float64 `json:"percentage"`
 }
 type ValueCount struct {
 	Value      string  `json:"value"`
