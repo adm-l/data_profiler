@@ -182,7 +182,7 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 	}
 
 	if isText(c.DataType) {
-		addStringPatterns(&p)
+		addStringPatterns(ctx, db, d, qt, qc, total, &p)
 	}
 
 	if isText(c.DataType) && p.DistinctCount > 1 && p.DistinctCount <= 10000 {
