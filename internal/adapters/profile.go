@@ -78,31 +78,62 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 	qc := d.Quote(c.Name)
 	text := d.CastText(qc)
 	p := domain.ColumnProfile{Name: c.Name, DataType: c.DataType, Nullable: c.Nullable, TotalRows: total}
-	q := "SELECT COUNT(*)-COUNT(" + qc + "), COUNT(DISTINCT " + text + ") FROM " + qt
-	if err := db.QueryRowContext(ctx, q).Scan(&p.NullCount, &p.DistinctCount); err != nil {
+
+	// Combine the common aggregates into one table scan per column.
+	// Top-values and percentiles intentionally remain separate because they
+	// require different execution plans.
+	q := "SELECT COUNT(*)-COUNT(" + qc + "),COUNT(DISTINCT " + text + ")"
+	if isText(c.DataType) {
+		q += ",COALESCE(MIN(" + d.LengthExpr(qc) + "),0),COALESCE(MAX(" + d.LengthExpr(qc) + "),0),AVG(" + d.LengthExpr(qc) + "),COALESCE(SUM(CASE WHEN " + qc + " IS NOT NULL AND " + qc + "='' THEN 1 ELSE 0 END),0)"
+	} else {
+		q += ",NULL,NULL,NULL,NULL"
+	}
+	if isNumeric(c.DataType) {
+		q += ",MIN(" + qc + "),MAX(" + qc + "),AVG(" + qc + ")"
+	} else {
+		q += ",NULL,NULL,NULL"
+	}
+
+	var minLen, maxLen sql.NullInt64
+	var avgLen sql.NullFloat64
+	var minNum, maxNum, avgNum sql.NullFloat64
+	if err := db.QueryRowContext(ctx, q+" FROM "+qt).Scan(
+		&p.NullCount, &p.DistinctCount,
+		&minLen, &maxLen, &avgLen, &p.EmptyCount,
+		&minNum, &maxNum, &avgNum,
+	); err != nil {
 		return p, err
 	}
 	if total > 0 {
 		p.NullPercentage = float64(p.NullCount) * 100 / float64(total)
 		p.DistinctPercentage = float64(p.DistinctCount) * 100 / float64(total)
 	}
-	if isText(c.DataType) {
-		var min, max int64
-		var avg sql.NullFloat64
-		q2 := "SELECT COALESCE(MIN(" + d.LengthExpr(qc) + "),0),COALESCE(MAX(" + d.LengthExpr(qc) + "),0),AVG(" + d.LengthExpr(qc) + "),SUM(CASE WHEN " + qc + " IS NOT NULL AND " + qc + "='' THEN 1 ELSE 0 END) FROM " + qt
-		if err := db.QueryRowContext(ctx, q2).Scan(&min, &max, &avg, &p.EmptyCount); err == nil {
-			p.MinLength = &min
-			p.MaxLength = &max
-			if avg.Valid && !math.IsNaN(avg.Float64) {
-				p.AvgLength = &avg.Float64
-			}
-		}
+	if minLen.Valid {
+		p.MinLength = &minLen.Int64
 	}
-	q3 := "SELECT " + text + ",COUNT(*) FROM " + qt + " WHERE " + qc + " IS NOT NULL GROUP BY " + text + " ORDER BY COUNT(*) DESC"
+	if maxLen.Valid {
+		p.MaxLength = &maxLen.Int64
+	}
+	if avgLen.Valid && !math.IsNaN(avgLen.Float64) {
+		p.AvgLength = &avgLen.Float64
+	}
+	if minNum.Valid {
+		s := strconv.FormatFloat(minNum.Float64, 'f', -1, 64)
+		p.Min = &s
+	}
+	if maxNum.Valid {
+		s := strconv.FormatFloat(maxNum.Float64, 'f', -1, 64)
+		p.Max = &s
+	}
+	if avgNum.Valid && !math.IsNaN(avgNum.Float64) {
+		p.Avg = &avgNum.Float64
+	}
+
+	q3 := "SELECT " + text + ",COUNT(*) FROM " + qt + " WHERE " + qc + " IS NOT NULL GROUP BY " + text + " ORDER BY COUNT(*) DESC LIMIT 10"
 	rows, err := db.QueryContext(ctx, q3)
 	if err == nil {
 		defer rows.Close()
-		for rows.Next() && len(p.TopValues) < 10 {
+		for rows.Next() {
 			var v string
 			var n int64
 			if rows.Scan(&v, &n) == nil {
@@ -114,23 +145,8 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 			}
 		}
 	}
-	if isNumeric(c.DataType) {
-		var min, max, avg sql.NullFloat64
-		q4 := "SELECT MIN(" + qc + "),MAX(" + qc + "),AVG(" + qc + ") FROM " + qt
-		if err := db.QueryRowContext(ctx, q4).Scan(&min, &max, &avg); err == nil {
-			if min.Valid {
-				s := strconv.FormatFloat(min.Float64, 'f', -1, 64)
-				p.Min = &s
-			}
-			if max.Valid {
-				s := strconv.FormatFloat(max.Float64, 'f', -1, 64)
-				p.Max = &s
-			}
-			if avg.Valid && !math.IsNaN(avg.Float64) {
-				p.Avg = &avg.Float64
-			}
-		}
 
+	if isNumeric(c.DataType) {
 		var stddev, median, p75, p90, p95, p99 sql.NullFloat64
 		q5 := "SELECT " + d.NumericStatsExpr(qc) + " FROM " + qt
 		if err := db.QueryRowContext(ctx, q5).Scan(&stddev, &median, &p75, &p90, &p95, &p99); err == nil {
