@@ -160,6 +160,7 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 		if dateRangeDays.Valid && !math.IsNaN(dateRangeDays.Float64) {
 			p.DateRangeDays = &dateRangeDays.Float64
 		}
+		addDateDistribution(ctx, db, d, qt, qc, total, &p)
 	}
 
 	q3 := "SELECT " + text + ",COUNT(*) FROM " + qt + " WHERE " + qc + " IS NOT NULL GROUP BY " + text + " ORDER BY COUNT(*) DESC LIMIT 10"
@@ -293,5 +294,19 @@ func addTextEntropy(ctx context.Context, db *sql.DB, table, column string, total
 	if maxEntropy > 0 {
 		normalized := entropy / maxEntropy
 		p.NormalizedEntropy = &normalized
+	}
+}
+
+func addDateDistribution(ctx context.Context, db *sql.DB, d Dialect, table, column string, total int64, p *domain.ColumnProfile) {
+	rows, err := db.QueryContext(ctx, d.DateDistributionQuery(column, table))
+	if err != nil { return }
+	defer rows.Close()
+	for rows.Next() {
+		var period string
+		var count int64
+		if err := rows.Scan(&period, &count); err != nil { return }
+		pct := 0.0
+		if total > 0 { pct = float64(count) * 100 / float64(total) }
+		p.DateDistribution = append(p.DateDistribution, domain.DateDistribution{Period: period, Count: count, Percentage: pct})
 	}
 }
