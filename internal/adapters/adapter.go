@@ -88,6 +88,7 @@ type Dialect interface {
 	FutureDateCountExpr(string) string
 	DateRangeDaysExpr(string) string
 	DateDistributionQuery(string, string) string
+	PatternCountsQuery(string, string) string
 	SampleTableExpr(string, int, int64) (string, bool, error)
 }
 type PostgresDialect struct{}
@@ -111,6 +112,7391 @@ func (PostgresDialect) NumericHistogramQuery(c, table string) string {
 }
 func (PostgresDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
 func (PostgresDialect) DateRangeDaysExpr(c string) string { return "EXTRACT(EPOCH FROM (MAX(" + c + ") - MIN(" + c + ")))/86400.0" }
+func (PostgresDialect) PatternCountsQuery(c, table string) string {
+	return "SELECT CASE WHEN " + c + " ~* '^[^@\\s]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) PatternCountsQuery(c, table string) string {
+	return "SELECT CASE WHEN " + c + " REGEXP '^[^@[:space:]]+@[A-Za-z0-9.-]+\\\\.[A-Za-z]{2,}(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) PatternCountsQuery(c, table string) string {
+	return "SELECT CASE WHEN " + c + " LIKE '%@%.%' THEN 'email' WHEN " + c + " LIKE '________-____-____-____-____________' THEN 'uuid' WHEN " + c + " LIKE 'http://%' OR " + c + " LIKE 'https://%' THEN 'url' WHEN " + c + " LIKE '[0-9][0-9][0-9][0-9][- /][0-9][0-9][- /][0-9][0-9]' THEN 'date' WHEN " + c + " NOT LIKE '%[^0-9]%' THEN 'integer_string' WHEN " + c + " NOT LIKE '%[^A-Za-z]%' THEN 'alphabetic' WHEN " + c + " NOT LIKE '%[^A-Za-z0-9]%' THEN 'alphanumeric' ELSE 'mixed' END,COUNT_BIG(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY CASE WHEN " + c + " LIKE '%@%.%' THEN 'email' WHEN " + c + " LIKE '________-____-____-____-____________' THEN 'uuid' WHEN " + c + " LIKE 'http://%' OR " + c + " LIKE 'https://%' THEN 'url' WHEN " + c + " LIKE '[0-9][0-9][0-9][0-9][- /][0-9][0-9][- /][0-9][0-9]' THEN 'date' WHEN " + c + " NOT LIKE '%[^0-9]%' THEN 'integer_string' WHEN " + c + " NOT LIKE '%[^A-Za-z]%' THEN 'alphabetic' WHEN " + c + " NOT LIKE '%[^A-Za-z0-9]%' THEN 'alphanumeric' ELSE 'mixed' END ORDER BY COUNT_BIG(*) DESC"
+}
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'email' WHEN " + c + " ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'uuid' WHEN " + c + " ~* '^https?://[^\\s]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'url' WHEN " + c + " ~ '^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'date' WHEN " + c + " ~ '^[+-]?[0-9]+([.,][0-9]+)?(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'numeric_string' WHEN " + c + " ~ '^[A-Za-z0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ AND " + c + " ~ '[A-Za-z]' AND " + c + " ~ '[0-9]' THEN 'alphanumeric' WHEN " + c + " ~ '^[A-Za-z]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'alphabetic' WHEN " + c + " ~ '^[0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'integer_string' ELSE 'mixed' END,COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY 1 ORDER BY COUNT(*) DESC"
+}
+func (PostgresDialect) DateDistributionQuery(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'email' WHEN " + c + " REGEXP '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'email' WHEN " + c + " ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'uuid' WHEN " + c + " ~* '^https?://[^\\s]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'url' WHEN " + c + " ~ '^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'date' WHEN " + c + " ~ '^[+-]?[0-9]+([.,][0-9]+)?(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'numeric_string' WHEN " + c + " ~ '^[A-Za-z0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ AND " + c + " ~ '[A-Za-z]' AND " + c + " ~ '[0-9]' THEN 'alphanumeric' WHEN " + c + " ~ '^[A-Za-z]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'alphabetic' WHEN " + c + " ~ '^[0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'integer_string' ELSE 'mixed' END,COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY 1 ORDER BY COUNT(*) DESC"
+}
+func (PostgresDialect) DateDistributionQuery(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'uuid' WHEN " + c + " REGEXP '^https?://[^[:space:]]+(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'email' WHEN " + c + " ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'uuid' WHEN " + c + " ~* '^https?://[^\\s]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'url' WHEN " + c + " ~ '^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'date' WHEN " + c + " ~ '^[+-]?[0-9]+([.,][0-9]+)?(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'numeric_string' WHEN " + c + " ~ '^[A-Za-z0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ AND " + c + " ~ '[A-Za-z]' AND " + c + " ~ '[0-9]' THEN 'alphanumeric' WHEN " + c + " ~ '^[A-Za-z]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'alphabetic' WHEN " + c + " ~ '^[0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'integer_string' ELSE 'mixed' END,COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY 1 ORDER BY COUNT(*) DESC"
+}
+func (PostgresDialect) DateDistributionQuery(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'url' WHEN " + c + " REGEXP '^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'email' WHEN " + c + " ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'uuid' WHEN " + c + " ~* '^https?://[^\\s]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'url' WHEN " + c + " ~ '^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'date' WHEN " + c + " ~ '^[+-]?[0-9]+([.,][0-9]+)?(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'numeric_string' WHEN " + c + " ~ '^[A-Za-z0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ AND " + c + " ~ '[A-Za-z]' AND " + c + " ~ '[0-9]' THEN 'alphanumeric' WHEN " + c + " ~ '^[A-Za-z]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'alphabetic' WHEN " + c + " ~ '^[0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'integer_string' ELSE 'mixed' END,COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY 1 ORDER BY COUNT(*) DESC"
+}
+func (PostgresDialect) DateDistributionQuery(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'date' WHEN " + c + " REGEXP '^[+-]?[0-9]+([.,][0-9]+)?(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'email' WHEN " + c + " ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'uuid' WHEN " + c + " ~* '^https?://[^\\s]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'url' WHEN " + c + " ~ '^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'date' WHEN " + c + " ~ '^[+-]?[0-9]+([.,][0-9]+)?(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'numeric_string' WHEN " + c + " ~ '^[A-Za-z0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ AND " + c + " ~ '[A-Za-z]' AND " + c + " ~ '[0-9]' THEN 'alphanumeric' WHEN " + c + " ~ '^[A-Za-z]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'alphabetic' WHEN " + c + " ~ '^[0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'integer_string' ELSE 'mixed' END,COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY 1 ORDER BY COUNT(*) DESC"
+}
+func (PostgresDialect) DateDistributionQuery(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'numeric_string' WHEN " + c + " REGEXP '^[A-Za-z0-9]+(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'email' WHEN " + c + " ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'uuid' WHEN " + c + " ~* '^https?://[^\\s]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'url' WHEN " + c + " ~ '^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'date' WHEN " + c + " ~ '^[+-]?[0-9]+([.,][0-9]+)?(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'numeric_string' WHEN " + c + " ~ '^[A-Za-z0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ AND " + c + " ~ '[A-Za-z]' AND " + c + " ~ '[0-9]' THEN 'alphanumeric' WHEN " + c + " ~ '^[A-Za-z]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'alphabetic' WHEN " + c + " ~ '^[0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'integer_string' ELSE 'mixed' END,COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY 1 ORDER BY COUNT(*) DESC"
+}
+func (PostgresDialect) DateDistributionQuery(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ AND " + c + " REGEXP '[A-Za-z]' AND " + c + " REGEXP '[0-9]' THEN 'alphanumeric' WHEN " + c + " REGEXP '^[A-Za-z]+(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'email' WHEN " + c + " ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'uuid' WHEN " + c + " ~* '^https?://[^\\s]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'url' WHEN " + c + " ~ '^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'date' WHEN " + c + " ~ '^[+-]?[0-9]+([.,][0-9]+)?(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'numeric_string' WHEN " + c + " ~ '^[A-Za-z0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ AND " + c + " ~ '[A-Za-z]' AND " + c + " ~ '[0-9]' THEN 'alphanumeric' WHEN " + c + " ~ '^[A-Za-z]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'alphabetic' WHEN " + c + " ~ '^[0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'integer_string' ELSE 'mixed' END,COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY 1 ORDER BY COUNT(*) DESC"
+}
+func (PostgresDialect) DateDistributionQuery(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'alphabetic' WHEN " + c + " REGEXP '^[0-9]+(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'email' WHEN " + c + " ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'uuid' WHEN " + c + " ~* '^https?://[^\\s]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'url' WHEN " + c + " ~ '^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'date' WHEN " + c + " ~ '^[+-]?[0-9]+([.,][0-9]+)?(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'numeric_string' WHEN " + c + " ~ '^[A-Za-z0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ AND " + c + " ~ '[A-Za-z]' AND " + c + " ~ '[0-9]' THEN 'alphanumeric' WHEN " + c + " ~ '^[A-Za-z]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'alphabetic' WHEN " + c + " ~ '^[0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'integer_string' ELSE 'mixed' END,COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY 1 ORDER BY COUNT(*) DESC"
+}
+func (PostgresDialect) DateDistributionQuery(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'integer_string' ELSE 'mixed' END,COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY 1 ORDER BY COUNT(*) DESC"
+}
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'email' WHEN " + c + " ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'uuid' WHEN " + c + " ~* '^https?://[^\\s]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'url' WHEN " + c + " ~ '^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'date' WHEN " + c + " ~ '^[+-]?[0-9]+([.,][0-9]+)?(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'numeric_string' WHEN " + c + " ~ '^[A-Za-z0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ AND " + c + " ~ '[A-Za-z]' AND " + c + " ~ '[0-9]' THEN 'alphanumeric' WHEN " + c + " ~ '^[A-Za-z]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'alphabetic' WHEN " + c + " ~ '^[0-9]+(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	pct := float64(sample) * 100 / float64(total)
+	return "(SELECT * FROM " + table + " TABLESAMPLE SYSTEM (" + strconv.FormatFloat(pct, 'f', 6, 64) + ") REPEATABLE (42) LIMIT " + strconv.Itoa(sample) + ") AS profile_sample", true, nil
+}
+
+type MySQLDialect struct{}
+
+func (MySQLDialect) Quote(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
+func (MySQLDialect) TablesQuery() string {
+	return `SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema=? AND table_type='BASE TABLE'`
+}
+func (MySQLDialect) ColumnsQuery() string {
+	return `SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema=? AND table_name=? ORDER BY ordinal_position`
+}
+func (MySQLDialect) CountExpr(t string) string  { return `COUNT(*) FROM ` + t }
+func (MySQLDialect) LengthExpr(c string) string { return `CHAR_LENGTH(` + c + `)` }
+func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)` }
+func (MySQLDialect) NumericStatsExpr(c string) string {
+	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
+}
+func (MySQLDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (MySQLDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (MySQLDialect) DateRangeDaysExpr(c string) string { return "TIMESTAMPDIFF(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (MySQLDialect) DateDistributionQuery(c, table string) string { return "SELECT DATE_FORMAT("+c+",'%Y-%m'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
+func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for MySQL")
+}
+
+type SQLServerDialect struct{}
+
+func (SQLServerDialect) Quote(s string) string { return "[" + strings.ReplaceAll(s, "]", "]]") + "]" }
+func (SQLServerDialect) TablesQuery() string {
+	return `SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=@p1 AND TABLE_TYPE='BASE TABLE'`
+}
+func (SQLServerDialect) ColumnsQuery() string {
+	return `SELECT COLUMN_NAME,DATA_TYPE,IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=@p1 AND TABLE_NAME=@p2 ORDER BY ORDINAL_POSITION`
+}
+func (SQLServerDialect) CountExpr(t string) string  { return `COUNT_BIG(*) FROM ` + t }
+func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
+func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
+func (SQLServerDialect) NumericStatsExpr(c string) string {
+	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
+	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
+	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
+}
+func (SQLServerDialect) FutureDateCountExpr(c string) string { return "COALESCE(SUM(CASE WHEN " + c + " > CURRENT_TIMESTAMP THEN 1 ELSE 0 END),0)" }
+func (SQLServerDialect) DateRangeDaysExpr(c string) string { return "DATEDIFF_BIG(SECOND,MIN(" + c + "),MAX(" + c + "))/86400.0" }
+func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
+	if sample <= 0 || total <= int64(sample) {
+		return table, false, nil
+	}
+	return "", false, fmt.Errorf("sampling is not yet supported for SQL Server")
+}
+
+type SQLAdapter struct {
+	db      *sql.DB
+	dialect Dialect
+}
+
+func (a *SQLAdapter) Close() error { return a.db.Close() }
+func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) ([]ColumnMeta, error) {
+	q := a.dialect.ColumnsQuery()
+	rows, err := a.db.QueryContext(ctx, q, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColumnMeta
+	for rows.Next() {
+		var c ColumnMeta
+		var n string
+		if err := rows.Scan(&c.Name, &c.DataType, &n); err != nil {
+			return nil, err
+		}
+		c.Nullable = strings.EqualFold(n, "YES")
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
+	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+ THEN 'integer_string' ELSE 'mixed' END,COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY 1 ORDER BY COUNT(*) DESC"
+}
 func (PostgresDialect) DateDistributionQuery(c, table string) string { return "SELECT TO_CHAR(DATE_TRUNC('month',"+c+"),'YYYY-MM'),COUNT(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 12" }
 func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
