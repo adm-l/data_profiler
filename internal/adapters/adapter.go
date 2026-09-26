@@ -120,7 +120,7 @@ func (PostgresDialect) PatternCountsQuery(c, table string) string {
 }
 func (PostgresDialect) NumericCorrelationQuery(x, y, table string) string { return "SELECT CORR(" + x + "," + y + ") FROM " + table + " WHERE " + x + " IS NOT NULL AND " + y + " IS NOT NULL" }
 func (PostgresDialect) RelationshipsQuery() string {
-	return `SELECT src.attname,target_ns.nspname,target.relname,tgt.attname
+	return `SELECT src_attr.attname,target_ns.nspname,target.relname,tgt.attname
 FROM pg_constraint con
 JOIN pg_class target ON target.oid=con.confrelid
 JOIN pg_namespace target_ns ON target_ns.oid=target.relnamespace
