@@ -120,12 +120,17 @@ func (PostgresDialect) PatternCountsQuery(c, table string) string {
 }
 func (PostgresDialect) NumericCorrelationQuery(x, y, table string) string { return "SELECT CORR(" + x + "," + y + ") FROM " + table + " WHERE " + x + " IS NOT NULL AND " + y + " IS NOT NULL" }
 func (PostgresDialect) RelationshipsQuery() string {
-	return `SELECT kcu.column_name,kcu.foreign_table_schema,kcu.foreign_table_name,kcu.foreign_column_name
-FROM information_schema.key_column_usage kcu
-JOIN information_schema.table_constraints tc
-  ON tc.constraint_schema=kcu.constraint_schema AND tc.constraint_name=kcu.constraint_name AND tc.table_name=kcu.table_name
-WHERE tc.constraint_type='FOREIGN KEY' AND kcu.table_schema=$1 AND kcu.table_name=$2
-ORDER BY kcu.ordinal_position`
+	return `SELECT src.attname,target_ns.nspname,target.relname,tgt.attname
+FROM pg_constraint con
+JOIN pg_class target ON target.oid=con.confrelid
+JOIN pg_namespace target_ns ON target_ns.oid=target.relnamespace
+JOIN LATERAL unnest(con.conkey) WITH ORDINALITY src(attnum,ord) ON TRUE
+JOIN LATERAL unnest(con.confkey) WITH ORDINALITY ref(attnum,ord) ON ref.ord=src.ord
+JOIN pg_attribute src_attr ON src_attr.attrelid=con.conrelid AND src_attr.attnum=src.attnum
+JOIN pg_attribute tgt ON tgt.attrelid=con.confrelid AND tgt.attnum=ref.attnum
+WHERE con.contype='f' AND con.connamespace=(SELECT oid FROM pg_namespace WHERE nspname=$1)
+  AND con.conrelid=(quote_ident($1)||'.'||quote_ident($2))::regclass
+ORDER BY con.oid,src.ord`
 }
 func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
@@ -203,12 +208,14 @@ func (SQLServerDialect) PatternCountsQuery(c, table string) string {
 func (SQLServerDialect) NumericCorrelationQuery(x, y, table string) string { return "SELECT (COUNT_BIG(*)*SUM("+x+"*"+y+")-SUM("+x+")*SUM("+y+"))/NULLIF(SQRT((COUNT_BIG(*)*SUM("+x+"*"+x+")-SUM("+x+")*SUM("+x+"))*(COUNT_BIG(*)*SUM("+y+"*"+y+")-SUM("+y+")*SUM("+y+"))),0) FROM "+table+" WHERE "+x+" IS NOT NULL AND "+y+" IS NOT NULL" }
 func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
 func (SQLServerDialect) RelationshipsQuery() string {
-	return `SELECT kcu.COLUMN_NAME,kcu.REFERENCED_TABLE_SCHEMA,kcu.REFERENCED_TABLE_NAME,kcu.REFERENCED_COLUMN_NAME
-FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
-JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
-  ON tc.CONSTRAINT_SCHEMA=kcu.CONSTRAINT_SCHEMA AND tc.CONSTRAINT_NAME=kcu.CONSTRAINT_NAME AND tc.TABLE_NAME=kcu.TABLE_NAME
-WHERE tc.CONSTRAINT_TYPE='FOREIGN KEY' AND kcu.TABLE_SCHEMA=@p1 AND kcu.TABLE_NAME=@p2
-ORDER BY kcu.ORDINAL_POSITION`
+	return `SELECT COL_NAME(fkc.parent_object_id,fkc.parent_column_id),
+SCHEMA_NAME(rt.schema_id),rt.name,COL_NAME(fkc.referenced_object_id,fkc.referenced_column_id)
+FROM sys.foreign_key_columns fkc
+JOIN sys.tables pt ON pt.object_id=fkc.parent_object_id
+JOIN sys.schemas ps ON ps.schema_id=pt.schema_id
+JOIN sys.tables rt ON rt.object_id=fkc.referenced_object_id
+WHERE ps.name=@p1 AND pt.name=@p2
+ORDER BY fkc.constraint_object_id,fkc.constraint_column_id`
 }
 func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
