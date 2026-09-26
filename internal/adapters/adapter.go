@@ -90,6 +90,7 @@ type Dialect interface {
 	DateDistributionQuery(string, string) string
 	PatternCountsQuery(string, string) string
 	NumericCorrelationQuery(string, string, string) string
+	RelationshipsQuery() string
 	SampleTableExpr(string, int, int64) (string, bool, error)
 }
 type PostgresDialect struct{}
@@ -118,6 +119,14 @@ func (PostgresDialect) PatternCountsQuery(c, table string) string {
 	return "SELECT CASE WHEN " + c + " ~* '^[^@\\s]+@[A-Za-z0-9]+\\.[A-Za-z]{2,}$' THEN 'email' WHEN " + c + " ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' THEN 'uuid' WHEN " + c + " ~* '^https?://[^\\s]+$' THEN 'url' WHEN " + c + " ~ '^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}$' THEN 'date' WHEN " + c + " ~ '^[+-]?[0-9]+([.,][0-9]+)?$' THEN 'numeric_string' WHEN " + c + " ~ '^[0-9]+$' THEN 'integer_string' WHEN " + c + " ~ '^[A-Za-z]+$' THEN 'alphabetic' WHEN " + c + " ~ '^[A-Za-z0-9]+$' THEN 'alphanumeric' WHEN " + c + " ~ '^[^A-Za-z0-9]+$' THEN 'symbolic' ELSE 'mixed' END,COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY 1 ORDER BY 2 DESC"
 }
 func (PostgresDialect) NumericCorrelationQuery(x, y, table string) string { return "SELECT CORR(" + x + "," + y + ") FROM " + table + " WHERE " + x + " IS NOT NULL AND " + y + " IS NOT NULL" }
+func (PostgresDialect) RelationshipsQuery() string {
+	return `SELECT kcu.column_name,kcu.foreign_table_schema,kcu.foreign_table_name,kcu.foreign_column_name
+FROM information_schema.key_column_usage kcu
+JOIN information_schema.table_constraints tc
+  ON tc.constraint_schema=kcu.constraint_schema AND tc.constraint_name=kcu.constraint_name AND tc.table_name=kcu.table_name
+WHERE tc.constraint_type='FOREIGN KEY' AND kcu.table_schema=$1 AND kcu.table_name=$2
+ORDER BY kcu.ordinal_position`
+}
 func (PostgresDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
 		return table, false, nil
@@ -152,6 +161,14 @@ func (MySQLDialect) PatternCountsQuery(c, table string) string {
 	return "SELECT CASE WHEN " + c + " REGEXP '^[^@[:space:]]+@[A-Za-z0-9]+\\.[A-Za-z]{2,}$' THEN 'email' WHEN " + c + " REGEXP '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89AaBb][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$' THEN 'uuid' WHEN " + c + " REGEXP '^https?://[^[:space:]]+$' THEN 'url' WHEN " + c + " REGEXP '^[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}$' THEN 'date' WHEN " + c + " REGEXP '^[+-]?[0-9]+([.,][0-9]+)?$' THEN 'numeric_string' WHEN " + c + " REGEXP '^[0-9]+$' THEN 'integer_string' WHEN " + c + " REGEXP '^[A-Za-z]+$' THEN 'alphabetic' WHEN " + c + " REGEXP '^[A-Za-z0-9]+$' THEN 'alphanumeric' WHEN " + c + " REGEXP '^[^A-Za-z0-9]+$' THEN 'symbolic' ELSE 'mixed' END,COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY 1 ORDER BY 2 DESC"
 }
 func (MySQLDialect) NumericCorrelationQuery(x, y, table string) string { return "SELECT (COUNT(*)*SUM("+x+"*"+y+")-SUM("+x+")*SUM("+y+"))/NULLIF(SQRT((COUNT(*)*SUM("+x+"*"+x+")-SUM("+x+")*SUM("+x+"))*(COUNT(*)*SUM("+y+"*"+y+")-SUM("+y+")*SUM("+y+"))),0) FROM "+table+" WHERE "+x+" IS NOT NULL AND "+y+" IS NOT NULL" }
+func (MySQLDialect) RelationshipsQuery() string {
+	return `SELECT kcu.column_name,kcu.referenced_table_schema,kcu.referenced_table_name,kcu.referenced_column_name
+FROM information_schema.key_column_usage kcu
+JOIN information_schema.table_constraints tc
+  ON tc.constraint_schema=kcu.constraint_schema AND tc.constraint_name=kcu.constraint_name AND tc.table_name=kcu.table_name
+WHERE tc.constraint_type='FOREIGN KEY' AND kcu.table_schema=? AND kcu.table_name=?
+ORDER BY kcu.ordinal_position`
+}
 func (MySQLDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
 		return table, false, nil
@@ -185,6 +202,14 @@ func (SQLServerDialect) PatternCountsQuery(c, table string) string {
 }
 func (SQLServerDialect) NumericCorrelationQuery(x, y, table string) string { return "SELECT (COUNT_BIG(*)*SUM("+x+"*"+y+")-SUM("+x+")*SUM("+y+"))/NULLIF(SQRT((COUNT_BIG(*)*SUM("+x+"*"+x+")-SUM("+x+")*SUM("+x+"))*(COUNT_BIG(*)*SUM("+y+"*"+y+")-SUM("+y+")*SUM("+y+"))),0) FROM "+table+" WHERE "+x+" IS NOT NULL AND "+y+" IS NOT NULL" }
 func (SQLServerDialect) DateDistributionQuery(c, table string) string { return "SELECT CONVERT(char(7),"+c+",120),COUNT_BIG(*) FROM "+table+" WHERE "+c+" IS NOT NULL GROUP BY CONVERT(char(7),"+c+",120) ORDER BY 1 DESC OFFSET 0 ROWS FETCH NEXT 12 ROWS ONLY" }
+func (SQLServerDialect) RelationshipsQuery() string {
+	return `SELECT kcu.COLUMN_NAME,kcu.REFERENCED_TABLE_SCHEMA,kcu.REFERENCED_TABLE_NAME,kcu.REFERENCED_COLUMN_NAME
+FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+  ON tc.CONSTRAINT_SCHEMA=kcu.CONSTRAINT_SCHEMA AND tc.CONSTRAINT_NAME=kcu.CONSTRAINT_NAME AND tc.TABLE_NAME=kcu.TABLE_NAME
+WHERE tc.CONSTRAINT_TYPE='FOREIGN KEY' AND kcu.TABLE_SCHEMA=@p1 AND kcu.TABLE_NAME=@p2
+ORDER BY kcu.ORDINAL_POSITION`
+}
 func (SQLServerDialect) SampleTableExpr(table string, sample int, total int64) (string, bool, error) {
 	if sample <= 0 || total <= int64(sample) {
 		return table, false, nil
