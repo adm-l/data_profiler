@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/example/go-data-profiler/internal/domain"
 	_ "github.com/go-sql-driver/mysql"
@@ -47,6 +49,18 @@ func Open(ctx context.Context, typ, dsn string) (Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Each profile job opens its own source DB handle. Bound its pool so
+	// concurrent profiling jobs cannot create an unbounded number of source
+	// database connections.
+	maxOpen := envInt("PROFILE_SOURCE_MAX_OPEN_CONNS", 4)
+	maxIdle := envInt("PROFILE_SOURCE_MAX_IDLE_CONNS", 2)
+	if maxIdle > maxOpen {
+		maxIdle = maxOpen
+	}
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxIdle)
+	db.SetConnMaxLifetime(envDuration("PROFILE_SOURCE_CONN_MAX_LIFETIME", 30*time.Minute))
 
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
@@ -251,4 +265,24 @@ func (a *SQLAdapter) DiscoverColumns(ctx context.Context, schema, table string) 
 }
 func (a *SQLAdapter) ProfileTable(ctx context.Context, schema, table string, sample int) (*domain.TableProfile, error) {
 	return ProfileTable(ctx, a.db, a.dialect, schema, table, sample)
+}
+
+func envInt(key string, fallback int) int {
+	v, err := strconv.Atoi(os.Getenv(key))
+	if err != nil || v < 1 {
+		return fallback
+	}
+	return v
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return fallback
+	}
+	return d
 }
