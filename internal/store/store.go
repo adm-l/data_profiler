@@ -12,6 +12,7 @@ type Store interface {
 	UpdateJob(context.Context, *domain.Job) error
 	GetJob(context.Context, string) (*domain.Job, error)
 	GetJobByIdempotencyKey(context.Context, string) (*domain.Job, error)
+	ListQueuedJobs(context.Context, int) ([]*domain.Job, error)
 	SaveProfile(context.Context, string, *domain.TableProfile) error
 	GetLatestProfile(context.Context, string) (*domain.TableProfile, error)
 	GetPreviousProfile(context.Context, string, string) (*domain.TableProfile, error)
@@ -29,6 +30,22 @@ func (s *PostgresStore) UpdateJob(ctx context.Context, j *domain.Job) error {
 	_, e := s.db.ExecContext(ctx, `UPDATE jobs SET status=$2,error=$3,started_at=$4,finished_at=$5 WHERE id=$1`, j.ID, j.Status, j.Error, j.StartedAt, j.FinishedAt)
 	return e
 }
+func (s *PostgresStore) ListQueuedJobs(ctx context.Context, limit int) ([]*domain.Job, error) {
+	if limit <= 0 || limit > 1000 { limit = 1000 }
+	rows, err := s.db.QueryContext(ctx, `SELECT id,status,COALESCE(error,''),request,created_at,started_at,finished_at FROM jobs WHERE status='queued' ORDER BY created_at LIMIT $1`, limit)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	out := make([]*domain.Job, 0, limit)
+	for rows.Next() {
+		var j domain.Job
+		var b []byte
+		if err := rows.Scan(&j.ID,&j.Status,&j.Error,&b,&j.CreatedAt,&j.StartedAt,&j.FinishedAt); err != nil { return nil, err }
+		if err := json.Unmarshal(b,&j.Request); err != nil { return nil, err }
+		out = append(out,&j)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) GetJobByIdempotencyKey(ctx context.Context, key string) (*domain.Job, error) {
 	var j domain.Job
 	var b []byte
