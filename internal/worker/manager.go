@@ -47,19 +47,32 @@ func (m *Manager) Stop() {
 	}
 	m.wg.Wait()
 }
-func (m *Manager) Enqueue(id string) {
+func (m *Manager) Enqueue(id string) bool {
 	select {
 	case m.jobs <- id:
+		return true
 	default:
 		m.logger.Warn("job queue full", zap.String("job_id", id))
+		return false
 	}
 }
+
 func (m *Manager) Create(req domain.ProfileRequest) (*domain.Job, error) {
 	j := &domain.Job{ID: uuid.NewString(), Status: "queued", Request: req, CreatedAt: time.Now().UTC()}
-	if err := m.store.CreateJob(context.Background(), j); err != nil {
+	ctx := context.Background()
+	if err := m.store.CreateJob(ctx, j); err != nil {
 		return nil, err
 	}
-	m.Enqueue(j.ID)
+	if !m.Enqueue(j.ID) {
+		now := time.Now().UTC()
+		j.Status = "failed"
+		j.Error = "job queue is full; retry later"
+		j.FinishedAt = &now
+		if err := m.store.UpdateJob(ctx, j); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("job queue is full; retry later")
+	}
 	return j, nil
 }
 func (m *Manager) loop(ctx context.Context) {
