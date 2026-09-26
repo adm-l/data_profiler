@@ -212,7 +212,13 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 	}
 
 	if isNumeric(c.DataType) {
-		var stddev, median, p75, p90, p95, p99 sql.NullFloat64
+		var sum, variance, skewness, kurtosis, stddev, median, p75, p90, p95, p99 sql.NullFloat64
+		if err := db.QueryRowContext(ctx, d.NumericAdvancedStatsQuery(qt, qc)).Scan(&sum, &variance, &skewness, &kurtosis); err == nil {
+			p.Sum = nullableFloat(sum)
+			p.Variance = nullableFloat(variance)
+			p.Skewness = nullableFloat(skewness)
+			p.Kurtosis = nullableFloat(kurtosis)
+		}
 		q5 := "SELECT " + d.NumericStatsExpr(qc) + " FROM " + qt
 		if err := db.QueryRowContext(ctx, q5).Scan(&stddev, &median, &p75, &p90, &p95, &p99); err == nil {
 			if stddev.Valid && !math.IsNaN(stddev.Float64) {
