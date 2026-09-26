@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"github.com/example/go-data-profiler/internal/domain"
 	"math"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -318,61 +317,19 @@ func addDateDistribution(ctx context.Context, db *sql.DB, d Dialect, table, colu
 }
 
 
-var (
- patternEmailRE = regexp.MustCompile(`(?i)^[^@\\s]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$`)
- patternUUIDRE = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
- patternURLRE = regexp.MustCompile(`(?i)^https?://[^\\s]+$`)
- patternDateRE = regexp.MustCompile(`^\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}$`)
- patternNumericRE = regexp.MustCompile(`^[+-]?\\d+(?:[.,]\\d+)?$`)
-)
-
-func addStringPatterns(p *domain.ColumnProfile) {
- if len(p.TopValues) == 0 || p.TotalRows <= 0 { return }
- counts := map[string]int64{}
- for _, v := range p.TopValues {
-  label := classifyStringPattern(v.Value)
-  if label != "" { counts[label] += v.Count }
- }
- var patterns []domain.PatternCount
- for label, count := range counts {
-  patterns = append(patterns, domain.PatternCount{Pattern: label, Count: count, Percentage: float64(count)*100/float64(p.TotalRows)})
- }
- // Stable order makes API output deterministic.
- for i := 0; i < len(patterns); i++ {
-  for j := i+1; j < len(patterns); j++ {
-   if patterns[j].Count > patterns[i].Count { patterns[i], patterns[j] = patterns[j], patterns[i] }
-  }
- }
- p.Patterns = patterns
+func addStringPatterns(ctx context.Context, db *sql.DB, d Dialect, table, column string, total int64, p *domain.ColumnProfile) {
+	if total-p.NullCount <= 0 { return }
+	rows, err := db.QueryContext(ctx, d.PatternCountsQuery(column, table))
+	if err != nil { return }
+	defer rows.Close()
+	nonNull := total - p.NullCount
+	for rows.Next() {
+		var pattern string
+		var count int64
+		if err := rows.Scan(&pattern, &count); err != nil { return }
+		p.Patterns = append(p.Patterns, domain.PatternCount{Pattern: pattern, Count: count, Percentage: float64(count) * 100 / float64(nonNull)})
+	}
 }
-
-func classifyStringPattern(s string) string {
- s = strings.TrimSpace(s)
- switch {
- case s == "": return "empty"
- case patternEmailRE.MatchString(s): return "email"
- case patternUUIDRE.MatchString(s): return "uuid"
- case patternURLRE.MatchString(s): return "url"
- case patternDateRE.MatchString(s): return "date"
- case patternNumericRE.MatchString(s): return "numeric_string"
- }
- hasLetter, hasDigit, hasOther := false, false, false
- for _, r := range s {
-  switch {
-  case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z': hasLetter = true
-  case r >= '0' && r <= '9': hasDigit = true
-  default: hasOther = true
-  }
- }
- switch {
- case hasLetter && hasDigit && !hasOther: return "alphanumeric"
- case hasLetter && !hasDigit && !hasOther: return "alphabetic"
- case hasDigit && !hasLetter && !hasOther: return "integer_string"
- case hasOther && !hasLetter && !hasDigit: return "symbolic"
- default: return "mixed"
- }
-}
-
 
 func addNumericCorrelations(ctx context.Context, db *sql.DB, d Dialect, table string, cols []ColumnMeta, out *[]domain.Correlation) {
 	var numeric []ColumnMeta
