@@ -46,6 +46,37 @@ func (m *Manager) Stop() {
 		m.stop()
 	}
 	m.wg.Wait()
+
+	// Workers have stopped, so anything still buffered in the queue will
+	// otherwise remain persisted as "queued" forever. Mark those jobs as
+	// failed so clients get a terminal state after shutdown.
+	for {
+		select {
+		case id := <-m.jobs:
+			m.failQueuedJob(id)
+		default:
+			return
+		}
+	}
+}
+
+func (m *Manager) failQueuedJob(id string) {
+	ctx := context.Background()
+	j, err := m.store.GetJob(ctx, id)
+	if err != nil {
+		m.logger.Warn("failed to load queued job during shutdown", zap.String("job_id", id), zap.Error(err))
+		return
+	}
+	if j.Status != "queued" {
+		return
+	}
+	now := time.Now().UTC()
+	j.Status = "failed"
+	j.Error = "job cancelled during profiler shutdown"
+	j.FinishedAt = &now
+	if err := m.store.UpdateJob(ctx, j); err != nil {
+		m.logger.Warn("failed to mark queued job during shutdown", zap.String("job_id", id), zap.Error(err))
+	}
 }
 func (m *Manager) Enqueue(id string) bool {
 	select {
