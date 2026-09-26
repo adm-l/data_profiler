@@ -131,7 +131,7 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 		q += ",0,0,0,0,0"
 	}
 	if isNumeric(c.DataType) {
-		q += "," + d.CastText("MIN("+qc+")") + "," + d.CastText("MAX("+qc+")") + ",AVG(" + qc + "),COALESCE(SUM(CASE WHEN " + qc + "=0 THEN 1 ELSE 0 END),0)"
+		q += "," + d.CastText("MIN("+qc+")") + "," + d.CastText("MAX("+qc+")") + ",AVG(" + qc + "),COALESCE(SUM(CASE WHEN " + qc + "=0 THEN 1 ELSE 0 END),0),0,0"
 	} else if isDateTime(c.DataType) {
 		q += "," + d.CastText("MIN("+qc+")") + "," + d.CastText("MAX("+qc+")") + ",NULL,0," + d.FutureDateCountExpr(qc) + "," + d.DateRangeDaysExpr(qc)
 	} else {
