@@ -11,6 +11,27 @@ import (
 )
 
 func ProfileTable(ctx context.Context, db *sql.DB, d Dialect, schema, table string, sample int) (*domain.TableProfile, error) {
+func addRelationships(ctx context.Context, db *sql.DB, d Dialect, schema, table string, out *[]domain.Relationship) {
+	rows, err := db.QueryContext(ctx, d.RelationshipsQuery(), schema, table)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var column, targetSchema, targetTable, targetColumn string
+		if err := rows.Scan(&column, &targetSchema, &targetTable, &targetColumn); err != nil {
+			return
+		}
+		*out = append(*out, domain.Relationship{
+			Column: column,
+			TargetSchema: targetSchema,
+			TargetTable: targetTable,
+			TargetColumn: targetColumn,
+			Type: "foreign_key",
+		})
+	}
+}
+
 	qt := d.Quote(schema) + "." + d.Quote(table)
 	var total int64
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+qt).Scan(&total); err != nil {
@@ -82,6 +103,7 @@ func ProfileTable(ctx context.Context, db *sql.DB, d Dialect, schema, table stri
 		return nil, first
 	}
 	result := &domain.TableProfile{Schema: schema, Table: table, TotalRows: total, Sampled: sampled, SampleSize: sample, Columns: out}
+	addRelationships(ctx, db, d, schema, table, &result.Relationships)
 	addNumericCorrelations(ctx, db, d, sampledFrom, cols, &result.Correlations)
 	if len(cols) > 0 {
 		groupCols := make([]string, len(cols))
