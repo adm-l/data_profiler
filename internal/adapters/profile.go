@@ -128,7 +128,7 @@ func profileColumn(ctx context.Context, db *sql.DB, d Dialect, qt string, c Colu
 	if isText(c.DataType) {
 		q += ",COALESCE(MIN(" + d.LengthExpr(qc) + "),0),COALESCE(MAX(" + d.LengthExpr(qc) + "),0),AVG(" + d.LengthExpr(qc) + "),COALESCE(SUM(CASE WHEN " + qc + " IS NOT NULL AND " + qc + "='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN " + qc + " IS NOT NULL AND " + qc + "<>'' AND REGEXP_REPLACE(" + text + ", '[[:space:]]', '', 'g')='' THEN 1 ELSE 0 END),0)"
 	} else {
-		q += ",0,0,0,0,0"
+		q += ",NULL,NULL,NULL,0,0"
 	}
 	if isNumeric(c.DataType) {
 		q += "," + d.CastText("MIN("+qc+")") + "," + d.CastText("MAX("+qc+")") + ",AVG(" + qc + "),COALESCE(SUM(CASE WHEN " + qc + "=0 THEN 1 ELSE 0 END),0),0,0"
