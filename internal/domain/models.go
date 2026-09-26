@@ -28,6 +28,7 @@ type Job struct {
 	Status     string         `json:"status"`
 	Error      string         `json:"error,omitempty"`
 	Request    ProfileRequest `json:"request"`
+	IdempotencyKey string         `json:"-"`
 	CreatedAt  time.Time      `json:"created_at"`
 	StartedAt  *time.Time     `json:"started_at,omitempty"`
 	FinishedAt *time.Time     `json:"finished_at,omitempty"`
