@@ -10,7 +10,6 @@ import (
 	"sync"
 )
 
-func ProfileTable(ctx context.Context, db *sql.DB, d Dialect, schema, table string, sample int) (*domain.TableProfile, error) {
 func addRelationships(ctx context.Context, db *sql.DB, d Dialect, schema, table string, out *[]domain.Relationship) {
 	rows, err := db.QueryContext(ctx, d.RelationshipsQuery(), schema, table)
 	if err != nil {
@@ -32,6 +31,7 @@ func addRelationships(ctx context.Context, db *sql.DB, d Dialect, schema, table 
 	}
 }
 
+func ProfileTable(ctx context.Context, db *sql.DB, d Dialect, schema, table string, sample int) (*domain.TableProfile, error) {
 	qt := d.Quote(schema) + "." + d.Quote(table)
 	var total int64
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+qt).Scan(&total); err != nil {
