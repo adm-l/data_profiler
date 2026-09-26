@@ -24,6 +24,9 @@ type Manager struct {
 	logger  *zap.Logger
 	stop    context.CancelFunc
 	wg      sync.WaitGroup
+	mu      sync.RWMutex
+	started bool
+	stopped bool
 }
 
 func NewManager(s store.Store, n int, l *zap.Logger) *Manager {
@@ -34,16 +37,33 @@ func NewManager(s store.Store, n int, l *zap.Logger) *Manager {
 }
 
 func (m *Manager) Start() {
+	m.mu.Lock()
+	if m.started {
+		m.mu.Unlock()
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.stop = cancel
+	m.started = true
+	m.stopped = false
+	m.mu.Unlock()
 	for i := 0; i < m.workers; i++ {
 		m.wg.Add(1)
 		go m.loop(ctx)
 	}
 }
 func (m *Manager) Stop() {
-	if m.stop != nil {
-		m.stop()
+	m.mu.Lock()
+	if !m.started || m.stopped {
+		m.mu.Unlock()
+		return
+	}
+	m.stopped = true
+	stop := m.stop
+	m.mu.Unlock()
+
+	if stop != nil {
+		stop()
 	}
 	m.wg.Wait()
 
@@ -79,6 +99,13 @@ func (m *Manager) failQueuedJob(id string) {
 	}
 }
 func (m *Manager) Enqueue(id string) bool {
+	m.mu.RLock()
+	stopped := m.stopped
+	m.mu.RUnlock()
+	if stopped {
+		m.logger.Warn("job rejected because profiler is shutting down", zap.String("job_id", id))
+		return false
+	}
 	select {
 	case m.jobs <- id:
 		return true
@@ -91,6 +118,12 @@ func (m *Manager) Enqueue(id string) bool {
 func (m *Manager) Create(req domain.ProfileRequest) (*domain.Job, error) {
 	j := &domain.Job{ID: uuid.NewString(), Status: "queued", Request: req, CreatedAt: time.Now().UTC()}
 	ctx := context.Background()
+	m.mu.RLock()
+	stopped := m.stopped
+	m.mu.RUnlock()
+	if stopped {
+		return nil, fmt.Errorf("profiler is shutting down")
+	}
 	if err := m.store.CreateJob(ctx, j); err != nil {
 		return nil, err
 	}
