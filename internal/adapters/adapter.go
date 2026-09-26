@@ -98,6 +98,7 @@ type Dialect interface {
 	LengthExpr(string) string
 	CastText(string) string
 	NumericStatsExpr(string) string
+	NumericAdvancedStatsQuery(string, string) string
 	NumericHistogramQuery(string, string) string
 	FutureDateCountExpr(string) string
 	DateRangeDaysExpr(string) string
@@ -121,6 +122,9 @@ func (PostgresDialect) LengthExpr(c string) string { return `LENGTH(` + c + `)` 
 func (PostgresDialect) CastText(c string) string { return `CAST(` + c + ` AS TEXT)` }
 func (PostgresDialect) NumericStatsExpr(c string) string {
 	return "STDDEV_POP(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + "),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ")"
+}
+func (PostgresDialect) NumericAdvancedStatsQuery(table, c string) string {
+	return "SELECT SUM(v)::double precision,VAR_POP(v),CASE WHEN var_v=0 THEN NULL ELSE AVG(POWER(v-mean_v,3))/POWER(var_v,1.5) END,CASE WHEN var_v=0 THEN NULL ELSE AVG(POWER(v-mean_v,4))/POWER(var_v,2)-3 END FROM (SELECT "+c+" AS v,AVG("+c+") OVER() AS mean_v,VAR_POP("+c+") OVER() AS var_v FROM "+table+" WHERE "+c+" IS NOT NULL) s GROUP BY var_v"
 }
 func (PostgresDialect) NumericHistogramQuery(c, table string) string {
 	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + ")),0) * 10)::int) END"
@@ -169,6 +173,9 @@ func (MySQLDialect) CastText(c string) string { return `CAST(` + c + ` AS CHAR)`
 func (MySQLDialect) NumericStatsExpr(c string) string {
 	return "STDDEV_POP(" + c + "),NULL,NULL,NULL,NULL,NULL"
 }
+func (MySQLDialect) NumericAdvancedStatsQuery(table, c string) string {
+	return "SELECT SUM(v)*1.0,VAR_POP(v),CASE WHEN var_v=0 THEN NULL ELSE AVG(POW(v-mean_v,3))/POW(var_v,1.5) END,CASE WHEN var_v=0 THEN NULL ELSE AVG(POW(v-mean_v,4))/POW(var_v,2)-3 END FROM (SELECT "+c+" AS v,AVG("+c+") OVER() AS mean_v,VAR_POP("+c+") OVER() AS var_v FROM "+table+" WHERE "+c+" IS NOT NULL) s GROUP BY var_v"
+}
 func (MySQLDialect) NumericHistogramQuery(c, table string) string {
 	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE LEAST(9, FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10)) END"
 	return "SELECT " + bucket + ",COUNT(*) FROM " + table + " WHERE " + c + " IS NOT NULL GROUP BY " + bucket + " ORDER BY 1"
@@ -209,6 +216,9 @@ func (SQLServerDialect) LengthExpr(c string) string { return `LEN(` + c + `)` }
 func (SQLServerDialect) CastText(c string) string { return `CAST(` + c + ` AS NVARCHAR(MAX))` }
 func (SQLServerDialect) NumericStatsExpr(c string) string {
 	return "STDEV(" + c + "),PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY " + c + ") OVER (),PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY " + c + ") OVER ()"
+}
+func (SQLServerDialect) NumericAdvancedStatsQuery(table, c string) string {
+	return "SELECT CAST(SUM(v) AS float),VARP(v),CASE WHEN var_v=0 THEN NULL ELSE AVG(POWER(v-mean_v,3))/POWER(var_v,1.5) END,CASE WHEN var_v=0 THEN NULL ELSE AVG(POWER(v-mean_v,4))/POWER(var_v,2)-3 END FROM (SELECT "+c+" AS v,AVG("+c+") OVER() AS mean_v,VARP("+c+") OVER() AS var_v FROM "+table+" WHERE "+c+" IS NOT NULL) s GROUP BY var_v"
 }
 func (SQLServerDialect) NumericHistogramQuery(c, table string) string {
 	bucket := "CASE WHEN (SELECT MIN(" + c + ") FROM " + table + ") = (SELECT MAX(" + c + ") FROM " + table + ") THEN 0 ELSE CASE WHEN FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) > 9 THEN 9 ELSE CAST(FLOOR((" + c + " - (SELECT MIN(" + c + ") FROM " + table + ")) / NULLIF((SELECT MAX(" + c + ") FROM " + table + ") - (SELECT MIN(" + c + ") FROM " + table + "),0) * 10) AS INT) END END"
