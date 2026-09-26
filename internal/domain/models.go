@@ -104,6 +104,14 @@ type Correlation struct {
 	Coefficient float64 `json:"coefficient"`
 }
 
+type Relationship struct {
+	Column       string `json:"column"`
+	TargetSchema string `json:"target_schema"`
+	TargetTable  string `json:"target_table"`
+	TargetColumn string `json:"target_column"`
+	Type         string `json:"type"`
+}
+
 type TableProfile struct {
 	Schema                 string         `json:"schema"`
 	Table                  string         `json:"table"`
@@ -116,6 +124,7 @@ type TableProfile struct {
 	Quality                QualityReport  `json:"quality"`
 	Drift                  *DriftReport   `json:"drift,omitempty"`
 	Correlations           []Correlation  `json:"correlations,omitempty"`
+	Relationships          []Relationship `json:"relationships,omitempty"`
 	CreatedAt              time.Time      `json:"created_at"`
 }
 
