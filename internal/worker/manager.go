@@ -47,6 +47,19 @@ func (m *Manager) Start() {
 	m.started = true
 	m.stopped = false
 	m.mu.Unlock()
+
+	// Recover jobs that were persisted before a process crash/restart.
+	if queued, err := m.store.ListQueuedJobs(context.Background(), cap(m.jobs)); err != nil {
+		m.logger.Error("failed to recover queued jobs", zap.Error(err))
+	} else {
+		for _, j := range queued {
+			if !m.Enqueue(j.ID) {
+				m.logger.Error("failed to requeue recovered job", zap.String("job_id", j.ID))
+				break
+			}
+		}
+	}
+
 	for i := 0; i < m.workers; i++ {
 		m.wg.Add(1)
 		go m.loop(ctx)
