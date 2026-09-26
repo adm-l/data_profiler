@@ -125,7 +125,10 @@ func (m *Manager) run(parent context.Context, id string) {
 	now := time.Now().UTC()
 	j.Status = "running"
 	j.StartedAt = &now
-	_ = m.store.UpdateJob(parent, j)
+	if err := m.store.UpdateJob(parent, j); err != nil {
+		m.logger.Error("failed to mark job running", zap.String("job_id", id), zap.Error(err))
+		return
+	}
 	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
 	defer cancel()
 	a, err := adapters.Open(ctx, j.Request.Source.Type, j.Request.Source.DSN)
@@ -160,5 +163,12 @@ func (m *Manager) run(parent context.Context, id string) {
 	}
 	end := time.Now().UTC()
 	j.FinishedAt = &end
-	_ = m.store.UpdateJob(context.Background(), j)
+	if updateErr := m.store.UpdateJob(context.Background(), j); updateErr != nil {
+		m.logger.Error(
+			"failed to persist final job status",
+			zap.String("job_id", id),
+			zap.String("status", j.Status),
+			zap.Error(updateErr),
+		)
+	}
 }
