@@ -18,216 +18,112 @@ import (
 )
 
 type Manager struct {
-	store   store.Store
-	jobs    chan string
-	workers int
-	logger  *zap.Logger
-	stop    context.CancelFunc
-	wg      sync.WaitGroup
-	mu      sync.RWMutex
-	started bool
-	stopped bool
+	store       store.Store
+	jobs        chan string
+	workers     int
+	logger      *zap.Logger
+	staleAfter  time.Duration
+	stop        context.CancelFunc
+	wg          sync.WaitGroup
+	mu          sync.RWMutex
+	started     bool
+	stopped     bool
 }
 
-func NewManager(s store.Store, n int, l *zap.Logger) *Manager {
-	if n < 1 {
-		n = 1
-	}
-	return &Manager{store: s, jobs: make(chan string, 1000), workers: n, logger: l}
+func NewManager(s store.Store, n int, l *zap.Logger, staleAfter time.Duration) *Manager {
+	if n < 1 { n = 1 }
+	if staleAfter <= 0 { staleAfter = 30 * time.Minute }
+	return &Manager{store:s, jobs:make(chan string,1000), workers:n, logger:l, staleAfter:staleAfter}
 }
 
 func (m *Manager) Start() {
 	m.mu.Lock()
-	if m.started {
-		m.mu.Unlock()
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	m.stop = cancel
-	m.started = true
-	m.stopped = false
+	if m.started { m.mu.Unlock(); return }
+	ctx,cancel:=context.WithCancel(context.Background())
+	m.stop=cancel
+	m.started=true
+	m.stopped=false
 	m.mu.Unlock()
 
-	// Recover jobs that were persisted before a process crash/restart.
-	if queued, err := m.store.ListQueuedJobs(context.Background(), cap(m.jobs)); err != nil {
-		m.logger.Error("failed to recover queued jobs", zap.Error(err))
-	} else {
-		for _, j := range queued {
-			if !m.Enqueue(j.ID) {
-				m.logger.Error("failed to requeue recovered job", zap.String("job_id", j.ID))
+	if recovered,err:=m.store.RecoverStaleRunningJobs(context.Background(),m.staleAfter);err!=nil {
+		m.logger.Error("failed to recover stale running jobs",zap.Error(err))
+	} else if recovered>0 {
+		m.logger.Info("recovered stale running jobs",zap.Int("count",recovered),zap.Duration("stale_after",m.staleAfter))
+	}
+	if queued,err:=m.store.ListQueuedJobs(context.Background(),cap(m.jobs));err!=nil {
+		m.logger.Error("failed to recover queued jobs",zap.Error(err))
+	}else{
+		for _,j:=range queued{
+			if !m.Enqueue(j.ID){
+				m.logger.Error("failed to requeue recovered job",zap.String("job_id",j.ID))
 				break
 			}
 		}
 	}
-
-	for i := 0; i < m.workers; i++ {
-		m.wg.Add(1)
-		go m.loop(ctx)
-	}
+	for i:=0;i<m.workers;i++{m.wg.Add(1);go m.loop(ctx)}
 }
-func (m *Manager) Stop() {
+func (m *Manager) Stop(){
 	m.mu.Lock()
-	if !m.started || m.stopped {
-		m.mu.Unlock()
-		return
-	}
-	m.stopped = true
-	stop := m.stop
+	if !m.started||m.stopped{m.mu.Unlock();return}
+	m.stopped=true
+	stop:=m.stop
 	m.mu.Unlock()
-
-	if stop != nil {
-		stop()
-	}
+	if stop!=nil{stop()}
 	m.wg.Wait()
-
-	// Workers have stopped, so anything still buffered in the queue will
-	// otherwise remain persisted as "queued" forever. Mark those jobs as
-	// failed so clients get a terminal state after shutdown.
-	for {
-		select {
-		case id := <-m.jobs:
-			m.failQueuedJob(id)
-		default:
-			return
-		}
-	}
+	for{select{case id:=<-m.jobs:m.failQueuedJob(id);default:return}}
 }
-
-func (m *Manager) failQueuedJob(id string) {
-	ctx := context.Background()
-	j, err := m.store.GetJob(ctx, id)
-	if err != nil {
-		m.logger.Warn("failed to load queued job during shutdown", zap.String("job_id", id), zap.Error(err))
-		return
-	}
-	if j.Status != "queued" {
-		return
-	}
-	now := time.Now().UTC()
-	j.Status = "failed"
-	j.Error = "job cancelled during profiler shutdown"
-	j.FinishedAt = &now
-	if err := m.store.UpdateJob(ctx, j); err != nil {
-		m.logger.Warn("failed to mark queued job during shutdown", zap.String("job_id", id), zap.Error(err))
-	}
+func (m *Manager) failQueuedJob(id string){
+	ctx:=context.Background()
+	j,err:=m.store.GetJob(ctx,id)
+	if err!=nil{m.logger.Warn("failed to load queued job during shutdown",zap.String("job_id",id),zap.Error(err));return}
+	if j.Status!="queued"{return}
+	now:=time.Now().UTC();j.Status="failed";j.Error="job cancelled during profiler shutdown";j.FinishedAt=&now
+	if err:=m.store.UpdateJob(ctx,j);err!=nil{m.logger.Warn("failed to mark queued job during shutdown",zap.String("job_id",id),zap.Error(err))}
 }
-func (m *Manager) Enqueue(id string) bool {
-	m.mu.RLock()
-	stopped := m.stopped
-	m.mu.RUnlock()
-	if stopped {
-		m.logger.Warn("job rejected because profiler is shutting down", zap.String("job_id", id))
-		return false
-	}
-	select {
-	case m.jobs <- id:
-		return true
-	default:
-		m.logger.Warn("job queue full", zap.String("job_id", id))
-		return false
-	}
+func(m *Manager)Enqueue(id string)bool{
+	m.mu.RLock();stopped:=m.stopped;m.mu.RUnlock()
+	if stopped{m.logger.Warn("job rejected because profiler is shutting down",zap.String("job_id",id));return false}
+	select{case m.jobs<-id:return true;default:m.logger.Warn("job queue full",zap.String("job_id",id));return false}
 }
-
-func (m *Manager) Create(req domain.ProfileRequest, idempotencyKey string) (*domain.Job, error) {
-	j := &domain.Job{ID: uuid.NewString(), Status: "queued", Request: req, IdempotencyKey: idempotencyKey, CreatedAt: time.Now().UTC()}
-	ctx := context.Background()
-	if idempotencyKey != "" {
-		if existing, err := m.store.GetJobByIdempotencyKey(ctx, idempotencyKey); err == nil {
-			return existing, nil
-		}
+func(m *Manager)Create(req domain.ProfileRequest,idempotencyKey string)(*domain.Job,error){
+	j:=&domain.Job{ID:uuid.NewString(),Status:"queued",Request:req,IdempotencyKey:idempotencyKey,CreatedAt:time.Now().UTC()}
+	ctx:=context.Background()
+	if idempotencyKey!=""{if existing,err:=m.store.GetJobByIdempotencyKey(ctx,idempotencyKey);err==nil{return existing,nil}}
+	m.mu.RLock();stopped:=m.stopped;m.mu.RUnlock()
+	if stopped{return nil,fmt.Errorf("profiler is shutting down")}
+	if err:=m.store.CreateJob(ctx,j);err!=nil{
+		if idempotencyKey!=""{if existing,lookupErr:=m.store.GetJobByIdempotencyKey(ctx,idempotencyKey);lookupErr==nil{return existing,nil}}
+		return nil,err
 	}
-	m.mu.RLock()
-	stopped := m.stopped
-	m.mu.RUnlock()
-	if stopped {
-		return nil, fmt.Errorf("profiler is shutting down")
+	if !m.Enqueue(j.ID){
+		now:=time.Now().UTC();j.Status="failed";j.Error="job queue is full; retry later";j.FinishedAt=&now
+		if err:=m.store.UpdateJob(ctx,j);err!=nil{return nil,err}
+		return nil,fmt.Errorf("job queue is full; retry later")
 	}
-	if err := m.store.CreateJob(ctx, j); err != nil {
-		// Two requests can race before either sees the idempotency key.
-		// The database unique index is the final authority; if our insert
-		// loses that race, return the already-created job.
-		if idempotencyKey != "" {
-			if existing, lookupErr := m.store.GetJobByIdempotencyKey(ctx, idempotencyKey); lookupErr == nil {
-				return existing, nil
-			}
-		}
-		return nil, err
-	}
-	if !m.Enqueue(j.ID) {
-		now := time.Now().UTC()
-		j.Status = "failed"
-		j.Error = "job queue is full; retry later"
-		j.FinishedAt = &now
-		if err := m.store.UpdateJob(ctx, j); err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("job queue is full; retry later")
-	}
-	return j, nil
+	return j,nil
 }
-func (m *Manager) loop(ctx context.Context) {
+func(m *Manager)loop(ctx context.Context){
 	defer m.wg.Done()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case id := <-m.jobs:
-			m.run(ctx, id)
-		}
-	}
+	for{select{case <-ctx.Done():return;case id:=<-m.jobs:m.run(ctx,id)}}
 }
-func (m *Manager) run(parent context.Context, id string) {
-	j, err := m.store.GetJob(parent, id)
-	if err != nil {
-		return
-	}
-	now := time.Now().UTC()
-	j.Status = "running"
-	j.StartedAt = &now
-	if err := m.store.UpdateJob(parent, j); err != nil {
-		m.logger.Error("failed to mark job running", zap.String("job_id", id), zap.Error(err))
-		return
-	}
-	ctx, cancel := context.WithTimeout(parent, 30*time.Minute)
-	defer cancel()
-	a, err := adapters.Open(ctx, j.Request.Source.Type, j.Request.Source.DSN)
-	if err == nil {
+func(m *Manager)run(parent context.Context,id string){
+	j,err:=m.store.GetJob(parent,id);if err!=nil{return}
+	now:=time.Now().UTC();j.Status="running";j.Error="";j.StartedAt=&now;j.FinishedAt=nil
+	if err:=m.store.UpdateJob(parent,j);err!=nil{m.logger.Error("failed to mark job running",zap.String("job_id",id),zap.Error(err));return}
+	ctx,cancel:=context.WithTimeout(parent,30*time.Minute);defer cancel()
+	a,err:=adapters.Open(ctx,j.Request.Source.Type,j.Request.Source.DSN)
+	if err==nil{
 		defer a.Close()
 		var p *domain.TableProfile
-		p, err = a.ProfileTable(ctx, j.Request.Schema, j.Request.Table, j.Request.SampleSize)
-		if err == nil {
-			for i := range p.Columns {
-				detection := pii.DetectProfile(p.Columns[i].Name, p.Columns[i].DataType, p.Columns[i].TopValues)
-				p.Columns[i].PII = detection.Label
-				p.Columns[i].PIIConfidence = detection.Confidence
-			}
-			p.Quality = quality.Evaluate(p, j.Request.QualityRules)
-			p.CreatedAt = time.Now().UTC()
-
-			// Compare this snapshot with the most recent completed profile
-			// for the same schema/table before persisting the new snapshot.
-			if previous, previousErr := m.store.GetPreviousProfile(ctx, p.Schema, p.Table); previousErr == nil {
-				report := drift.Compare(*previous, *p)
-				p.Drift = &report
-			}
-
-			err = m.store.SaveProfile(ctx, j.ID, p)
+		p,err=a.ProfileTable(ctx,j.Request.Schema,j.Request.Table,j.Request.SampleSize)
+		if err==nil{
+			for i:=range p.Columns{detection:=pii.DetectProfile(p.Columns[i].Name,p.Columns[i].DataType,p.Columns[i].TopValues);p.Columns[i].PII=detection.Label;p.Columns[i].PIIConfidence=detection.Confidence}
+			p.Quality=quality.Evaluate(p,j.Request.QualityRules);p.CreatedAt=time.Now().UTC()
+			if previous,previousErr:=m.store.GetPreviousProfile(ctx,p.Schema,p.Table);previousErr==nil{report:=drift.Compare(*previous,*p);p.Drift=&report}
+			err=m.store.SaveProfile(ctx,j.ID,p)
 		}
 	}
-	if err != nil {
-		j.Status = "failed"
-		j.Error = fmt.Sprintf("%v", err)
-	} else {
-		j.Status = "completed"
-	}
-	end := time.Now().UTC()
-	j.FinishedAt = &end
-	if updateErr := m.store.UpdateJob(context.Background(), j); updateErr != nil {
-		m.logger.Error(
-			"failed to persist final job status",
-			zap.String("job_id", id),
-			zap.String("status", j.Status),
-			zap.Error(updateErr),
-		)
-	}
+	if err!=nil{j.Status="failed";j.Error=fmt.Sprintf("%v",err)}else{j.Status="completed"}
+	end:=time.Now().UTC();j.FinishedAt=&end
+	if updateErr:=m.store.UpdateJob(context.Background(),j);updateErr!=nil{m.logger.Error("failed to persist final job status",zap.String("job_id",id),zap.String("status",j.Status),zap.Error(updateErr))}
 }
