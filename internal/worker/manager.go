@@ -115,9 +115,14 @@ func (m *Manager) Enqueue(id string) bool {
 	}
 }
 
-func (m *Manager) Create(req domain.ProfileRequest) (*domain.Job, error) {
-	j := &domain.Job{ID: uuid.NewString(), Status: "queued", Request: req, CreatedAt: time.Now().UTC()}
+func (m *Manager) Create(req domain.ProfileRequest, idempotencyKey string) (*domain.Job, error) {
+	j := &domain.Job{ID: uuid.NewString(), Status: "queued", Request: req, IdempotencyKey: idempotencyKey, CreatedAt: time.Now().UTC()}
 	ctx := context.Background()
+	if idempotencyKey != "" {
+		if existing, err := m.store.GetJobByIdempotencyKey(ctx, idempotencyKey); err == nil {
+			return existing, nil
+		}
+	}
 	m.mu.RLock()
 	stopped := m.stopped
 	m.mu.RUnlock()
