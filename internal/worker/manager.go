@@ -130,6 +130,14 @@ func (m *Manager) Create(req domain.ProfileRequest, idempotencyKey string) (*dom
 		return nil, fmt.Errorf("profiler is shutting down")
 	}
 	if err := m.store.CreateJob(ctx, j); err != nil {
+		// Two requests can race before either sees the idempotency key.
+		// The database unique index is the final authority; if our insert
+		// loses that race, return the already-created job.
+		if idempotencyKey != "" {
+			if existing, lookupErr := m.store.GetJobByIdempotencyKey(ctx, idempotencyKey); lookupErr == nil {
+				return existing, nil
+			}
+		}
 		return nil, err
 	}
 	if !m.Enqueue(j.ID) {
