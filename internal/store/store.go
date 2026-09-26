@@ -11,6 +11,7 @@ type Store interface {
 	CreateJob(context.Context, *domain.Job) error
 	UpdateJob(context.Context, *domain.Job) error
 	GetJob(context.Context, string) (*domain.Job, error)
+	GetJobByIdempotencyKey(context.Context, string) (*domain.Job, error)
 	SaveProfile(context.Context, string, *domain.TableProfile) error
 	GetLatestProfile(context.Context, string) (*domain.TableProfile, error)
 	GetPreviousProfile(context.Context, string, string) (*domain.TableProfile, error)
@@ -21,13 +22,23 @@ type PostgresStore struct{ db *sql.DB }
 func NewPostgresStore(db *sql.DB) *PostgresStore { return &PostgresStore{db: db} }
 func (s *PostgresStore) CreateJob(ctx context.Context, j *domain.Job) error {
 	b, _ := json.Marshal(j.Request)
-	_, e := s.db.ExecContext(ctx, `INSERT INTO jobs(id,status,request,created_at) VALUES($1,$2,$3,$4)`, j.ID, j.Status, b, j.CreatedAt)
+	_, e := s.db.ExecContext(ctx, `INSERT INTO jobs(id,status,request,created_at,idempotency_key) VALUES($1,$2,$3,$4,$5)`, j.ID, j.Status, b, j.CreatedAt, nullString(j.IdempotencyKey))
 	return e
 }
 func (s *PostgresStore) UpdateJob(ctx context.Context, j *domain.Job) error {
 	_, e := s.db.ExecContext(ctx, `UPDATE jobs SET status=$2,error=$3,started_at=$4,finished_at=$5 WHERE id=$1`, j.ID, j.Status, j.Error, j.StartedAt, j.FinishedAt)
 	return e
 }
+func (s *PostgresStore) GetJobByIdempotencyKey(ctx context.Context, key string) (*domain.Job, error) {
+	var j domain.Job
+	var b []byte
+	err := s.db.QueryRowContext(ctx, `SELECT id,status,COALESCE(error,''),request,created_at,started_at,finished_at FROM jobs WHERE idempotency_key=$1`, key).Scan(&j.ID, &j.Status, &j.Error, &b, &j.CreatedAt, &j.StartedAt, &j.FinishedAt)
+	if err != nil { return nil, err }
+	if err = json.Unmarshal(b, &j.Request); err != nil { return nil, err }
+	j.IdempotencyKey = key
+	return &j, nil
+}
+
 func (s *PostgresStore) GetJob(ctx context.Context, id string) (*domain.Job, error) {
 	var j domain.Job
 	var b []byte
@@ -83,4 +94,9 @@ func (s *PostgresStore) GetProfileHistory(ctx context.Context, schema, table str
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+func nullString(v string) any {
+	if v == "" { return nil }
+	return v
 }
