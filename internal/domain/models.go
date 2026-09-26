@@ -49,6 +49,10 @@ type ColumnProfile struct {
 	Min                  *string            `json:"min,omitempty"`
 	Max                  *string            `json:"max,omitempty"`
 	Avg                  *float64           `json:"avg,omitempty"`
+	Sum                  *float64           `json:"sum,omitempty"`
+	Variance             *float64           `json:"variance,omitempty"`
+	Skewness             *float64           `json:"skewness,omitempty"`
+	Kurtosis             *float64           `json:"kurtosis,omitempty"`
 	StdDev               *float64           `json:"stddev,omitempty"`
 	Median               *float64           `json:"median,omitempty"`
 	P50                  *float64           `json:"p50,omitempty"`
