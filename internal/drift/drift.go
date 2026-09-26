@@ -7,7 +7,12 @@ import (
 )
 
 func Compare(a, b domain.TableProfile) domain.DriftReport {
-	r := domain.DriftReport{ScoreDelta: b.Quality.Score - a.Quality.Score}
+	r := domain.DriftReport{ScoreDelta: b.Quality.Score - a.Quality.Score, ColumnChanges: []string{}}
+
+	if r.ScoreDelta != 0 {
+		r.Changed = true
+		r.ColumnChanges = append(r.ColumnChanges, fmt.Sprintf("quality score changed: %.2f -> %.2f", a.Quality.Score, b.Quality.Score))
+	}
 
 	oldCols := make(map[string]domain.ColumnProfile, len(a.Columns))
 	newCols := make(map[string]domain.ColumnProfile, len(b.Columns))
