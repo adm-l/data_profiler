@@ -38,7 +38,8 @@ func NewRouter(d Dependencies) http.Handler {
 				http.Error(w, "source.type, source.dsn, schema and table are required", 400)
 				return
 			}
-			j, e := d.Jobs.Create(in)
+			key := strings.TrimSpace(req.Header.Get("Idempotency-Key"))
+			j, e := d.Jobs.Create(in, key)
 			if e != nil {
 				http.Error(w, e.Error(), 500)
 				return
